@@ -25,8 +25,14 @@ SECTIONS {
         __bss_end = .;
     }
 
-    /* The kernel stack comes after the .bss section, and its size is 128KB. */
+    /* Allocate some space for the stack */
     . = ALIGN(4);
     . += 128 * 1024; /* 128KB */
     __stack_top = .;
+
+    /* Allocate some space for dynamic memory */
+    . = ALIGN(4096);
+	__free_ram = .;
+    . += 64 * 1024 * 1024; /* 64MB */
+    __free_ram_end = .;
 }

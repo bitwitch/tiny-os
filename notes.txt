@@ -1,0 +1,17 @@
+Machine Level CSRs
+--------------------------------------------------------------------------------
+medeleg: machine exception delegation register
+mideleg: machine interrupt delegation register
+	- implementations can provide individual read/write bits within medeleg and
+	  mideleg to indicate that certain exceptions and interrupts should be
+    processed directly by the S-mode trap handler
+
+Supervisor Level CSRs
+--------------------------------------------------------------------------------
+stvec: supervisor trap vector
+	- specifies where the trap handler is in memory
+
+
+
+
+
