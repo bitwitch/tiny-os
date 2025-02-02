@@ -1,3 +1,22 @@
+
+2025-02-02
+--------------------------------------------------------------------------------
+In yield, when context switching, we first save the very beginning of the stack
+in sscratch so that the exception handler has a stable reference to the
+process's stack in the case that sp is corrupted. In the exception handler
+(kernel_entry), we retrieve a ref to the current process's stack from sscratch
+and use it to store the execution context on the stack. However, since we always
+use the beginning of the stack as the stable reference, this means that saving
+the execution context will clobber anything that was on the stack. 
+
+This seems not good to me, but is it expected that after an exception the stack
+should remain stable? I feel like yeah but idk for sure. This part doesn't sit
+right with me, but I will continue on with the book, maybe I will learn
+something in the future that clarifies this.
+
+
+
+
 Machine Level CSRs
 --------------------------------------------------------------------------------
 medeleg: machine exception delegation register
@@ -11,6 +30,7 @@ Supervisor Level CSRs
 stvec: supervisor trap vector
 	- specifies where the trap handler is in memory
 
+https://operating-system-in-1000-lines.vercel.app
 
 
 
