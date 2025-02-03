@@ -1,19 +1,46 @@
 #define PROCS_MAX 8
 
-#define va_list  __builtin_va_list
-#define va_start __builtin_va_start
-#define va_end   __builtin_va_end
-#define va_arg   __builtin_va_arg
-
-#define align_up(value, align)   __builtin_align_up(value, align)
-#define is_aligned(value, align) __builtin_is_aligned(value, align)
-#define offsetof(type, member)   __builtin_offsetof(type, member)
+#define va_list    __builtin_va_list
+#define va_start   __builtin_va_start
+#define va_end     __builtin_va_end
+#define va_arg     __builtin_va_arg
+#define align_up   __builtin_align_up
+#define is_aligned __builtin_is_aligned
+#define offsetof   __builtin_offsetof
 
 #define true  1
 #define false 0
 #define NULL  ((void *) 0)
 
-#define KILOBYTES(n) (n * 1024)
+// SATP register (supervisor address translation and protection)
+// |  31  |     30 - 22   |                 21 - 0                      |
+// | Mode | addr space id | phyiscal page number where page table lives |
+#define SATP_SV32 (1u << 31)
+
+// |   31 - 10   |       9 - 8      | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+// | Page number | for software use | D | A | G | U | X | W | R | V |
+#define PAGE_V                  (1 << 0)     // valid
+#define PAGE_R                  (1 << 1)     // readable
+#define PAGE_W                  (1 << 2)     // writeable
+#define PAGE_X                  (1 << 3)     // executable
+#define PAGE_U                  (1 << 4)     // user
+#define PAGE_G                  (1 << 5)     // global
+#define PAGE_A                  (1 << 6)     // accessed
+#define PAGE_D                  (1 << 7)     // dirty
+#define PTE_PAGE_NUMBER_SHIFT   10
+#define PTE_PAGE_NUMBER_MASK    (((1 << 22) - 1) << PTE_PAGE_NUMBER_SHIFT)
+
+// |      31 - 22       |      21 - 12       |   11 - 0    |
+// | index into level 1 | index into level 0 | page offset |
+#define VADDR_PAGE_LEVEL0_SHIFT     12
+#define VADDR_PAGE_LEVEL1_SHIFT     22
+#define VADDR_PAGE_OFFSET_MASK      ((1 << 12) - 1)
+#define VADDR_PAGE_LEVEL0_MASK      (((1 << 10) - 1) << 12)
+#define VADDR_PAGE_LEVEL1_MASK      (VADDR_PAGE_LEVEL0_MASK << 10)
+
+
+#define KILOBYTES(n)   (n * 1024)
+#define PAGE_SIZE      KILOBYTES(4)
 
 #define PANIC(fmt, ...)                                                        \
 	do {                                                                       \
@@ -70,13 +97,14 @@ typedef struct {
 	int pid;
 	ProcState state;
 	Vaddr sp;
+	U32 *page_table; // pointer to 1st level page table
 	U8 stack[8192]; 
 } Process;
 
 // Linker symbols defined in kernel.ld
-extern U8 __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[];
+extern U8 __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[], __kernel_base[];
 
-static Paddr free_ram_top = (Paddr)__free_ram;
+static Paddr free_ram_cursor = (Paddr)__free_ram;
 
 static Process procs[PROCS_MAX]; 
 static Process *current_proc;
@@ -184,22 +212,60 @@ void *memset(void *buf, U8 val, U32 count) {
 }
 
 Paddr alloc_pages(U32 n) {
-	U32 size = n * KILOBYTES(4);
-	if (free_ram_top + size > (U32)__free_ram_end) {
+	U32 size = n * PAGE_SIZE;
+	if (free_ram_cursor + size > (U32)__free_ram_end) {
 		PANIC("out of memory, requested %d pages", n);
 	}
-	Paddr result = free_ram_top;
-	free_ram_top += size;
+	Paddr result = free_ram_cursor;
+	free_ram_cursor += size;
 	return result;
+}
+
+void map_page2(U32 *table1, Vaddr vaddr, Paddr paddr, U32 flags) {
+	if (!is_aligned(vaddr, PAGE_SIZE)) PANIC("unaligned vaddr %x", vaddr);
+	if (!is_aligned(paddr, PAGE_SIZE)) PANIC("unaligned paddr %x", paddr);
+
+	U32 t1_index = (vaddr & VADDR_PAGE_LEVEL1_MASK) >> VADDR_PAGE_LEVEL1_SHIFT;
+	if ((table1[t1_index] & PAGE_V) == 0) {
+		// create level 0 page table if it doesn't exist yet
+		Paddr table0 = alloc_pages(1);
+		U32 t0_page_num = table0 / PAGE_SIZE;
+		table1[t1_index] = (t0_page_num << PTE_PAGE_NUMBER_SHIFT) | PAGE_V;
+	}
+
+	U32 t0_page_num = (table1[t1_index] & PTE_PAGE_NUMBER_MASK) >> PTE_PAGE_NUMBER_SHIFT;
+	U32 *table0 = (U32*)(t0_page_num * PAGE_SIZE);
+	U32 t0_index = (vaddr & VADDR_PAGE_LEVEL0_MASK) >> VADDR_PAGE_LEVEL0_SHIFT;
+	U32 physical_page_num = paddr / PAGE_SIZE;
+	table0[t0_index] = (physical_page_num << PTE_PAGE_NUMBER_SHIFT) | flags | PAGE_V;
+}
+
+void map_page(U32 *table1, U32 vaddr, Paddr paddr, U32 flags) {
+    if (!is_aligned(vaddr, PAGE_SIZE))
+        PANIC("unaligned vaddr %x", vaddr);
+
+    if (!is_aligned(paddr, PAGE_SIZE))
+        PANIC("unaligned paddr %x", paddr);
+
+    U32 vpn1 = (vaddr >> 22) & 0x3ff;
+    if ((table1[vpn1] & PAGE_V) == 0) {
+        // Create the non-existent 2nd level page table.
+        U32 pt_paddr = alloc_pages(1);
+        table1[vpn1] = ((pt_paddr / PAGE_SIZE) << 10) | PAGE_V;
+    }
+
+    // Set the 2nd level page table entry to map the physical page.
+    U32 vpn0 = (vaddr >> 12) & 0x3ff;
+    U32 *table0 = (U32 *) ((table1[vpn1] >> 10) * PAGE_SIZE);
+    table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
 }
 
 Process *create_process(Paddr proc_start) {
 	Process *p = NULL;
-	for (int i=0; i<PROCS_MAX; ++i) {
-		if (procs[i].state == PROC_UNUSED) {
-			p = &procs[i];
-			p->pid = i;
-			p->state = PROC_RUNNABLE;
+	int pid;
+	for (pid=0; pid<PROCS_MAX; ++pid) {
+		if (procs[pid].state == PROC_UNUSED) {
+			p = &procs[pid];
 			break;
 		}
 	}
@@ -225,7 +291,17 @@ Process *create_process(Paddr proc_start) {
 	*--sp = 0;              // s0
 	*--sp = proc_start;     // ra
 
+	U32 *page_table = (U32*)alloc_pages(1);
+	for (Paddr paddr = (Paddr)__kernel_base; paddr < (Paddr)__free_ram_end; paddr += PAGE_SIZE) {
+		// Vaddr vaddr = paddr - (Paddr)__kernel_base;
+		// map_page(page_table, vaddr, paddr, PAGE_R|PAGE_W|PAGE_X);
+		map_page(page_table, paddr, paddr, PAGE_R|PAGE_W|PAGE_X);
+	}
+
+	p->pid = pid;
+	p->state = PROC_RUNNABLE;
 	p->sp = (Vaddr)sp;
+	p->page_table = page_table;
 
 	return p;
 }
@@ -384,13 +460,18 @@ void yield(void) {
 	}
 
 	if (next != current_proc) {
-		// save the next procs stack top in sscratch, this enables the exception
-		// handler to have a stable reference to this procs stack, in the case that sp
-		// is corrupted
 		__asm__ __volatile__(
+			// enable paging, and set the page number where the level1 page table lives for this process
+			"sfence.vma\n"
+			"csrw satp, %[satp]\n"
+			"sfence.vma\n"
+			// save the next procs stack top in sscratch, this enables the exception
+			// handler to have a stable reference to this procs stack, in the case that sp
+			// is corrupted
 			"csrw sscratch, %[stack_top]\n"
 			:
-			: [stack_top] "r" ((U32)&next->stack[sizeof(next->stack)])
+			: [satp]      "r" (SATP_SV32 | ((U32)next->page_table / PAGE_SIZE)),
+			  [stack_top] "r" ((U32)&next->stack[sizeof(next->stack)])
 		);
 		Process *prev = current_proc;
 		current_proc = next;
@@ -404,10 +485,10 @@ void proc_a_entry(void) {
 		putchar('A');
 		yield();
 		delay(30000000);
-		__asm__ __volatile__(
-			"li sp, 0xdeadbeef\n"  // set an invalid address to sp
-			"unimp"                // trigger an exception
-		);
+		// __asm__ __volatile__(
+			// "li sp, 0xdeadbeef\n"  // set an invalid address to sp
+			// "unimp"                // trigger an exception
+		// );
 	}
 }
 

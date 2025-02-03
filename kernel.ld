@@ -4,6 +4,7 @@ ENTRY(boot)
 SECTIONS {
     /* The base address is 0x80200000, this is where OpenSBI jumps.*/
     . = 0x80200000;
+	__kernel_base = .;
 
     .text :{
 		/* The .text.boot section is always placed at the beginning. */

@@ -1,3 +1,32 @@
+2025-02-03
+--------------------------------------------------------------------------------
+Paging in RISC-V: https://osdev.wiki/wiki/RISC-V_Paging
+
+Testing paging:
+SATP: 80080245
+      10000000 00001000 10000010 01000101
+	- mode: 1
+	- pysical page number where page table lives: 0x80245
+	- address of table1: 0x80245000
+
+Page table entry in table1 for virtual address 0x80000000: 0x20091801
+	- page number: 0x80246
+	- address of table0: 0x80246000
+	- valid, not readable, not writable, not executable
+
+Page table entry in table0 for virtual address 0x80000000: 0x200800cf
+	- page number: 0x800200
+	- address of page start: 0x800200000
+
+
+Manually inspecting memory indicates that the page tables are all set up
+correctly and working. However, using 'info mem' in qemu monitor yields no
+results. Importantly, it doesn't say "No translation or protection" which is
+what happens when the satp register is not enabled. So idk what is going on. I
+replaced my map_page code with the books version with the same result. It makes
+me suspect that info mem doesn't work properly, maybe because I'm on windows?
+but im not sure there may be another error somewhere.
+
 
 2025-02-02
 --------------------------------------------------------------------------------
@@ -15,7 +44,27 @@ right with me, but I will continue on with the book, maybe I will learn
 something in the future that clarifies this.
 
 
+2025-02-01
+--------------------------------------------------------------------------------
+I still don't understand why declaring a variable as an array on the c side
+allows you to access a linker symbol without taking address, but using a pointer
+type doesnt.
 
+when defining a symbol in a linker script and then accessing the symbol as a
+variable in c code, everything i read says that the type you declare on the c
+side doesnt actually matter, so extern char my_symbol;
+
+you use it by taking the address of the variable.
+
+So U32 address = &my_symbol, will give you the address you are looking for.
+
+However if you declare the variable as an array: extern char my_symbol[]; then
+you can use the variable like: U32 address = my_symbol; However, if you declare
+it as extern char *my_symbol; then it doesn't work, you still have
+
+
+2025-01-31
+--------------------------------------------------------------------------------
 
 Machine Level CSRs
 --------------------------------------------------------------------------------
