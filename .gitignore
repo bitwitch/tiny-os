@@ -1,4 +1,7 @@
 *.elf
 *.map
+*.bin
+*.o
 tags
 qemu.log 
+opensbi-riscv32-generic-fw_dynamic.bin 

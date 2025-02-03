@@ -17,6 +17,10 @@
 // | Mode | addr space id | phyiscal page number where page table lives |
 #define SATP_SV32 (1u << 31)
 
+// SPIE is bit 5 in the sstatus csr, it indicates whether supervisor interrupts
+// were enabled prior to trapping into supervisor mode
+#define SSTATUS_SPIE (1 << 5)
+
 // |   31 - 10   |       9 - 8      | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
 // | Page number | for software use | D | A | G | U | X | W | R | V |
 #define PAGE_V                  (1 << 0)     // valid
@@ -38,9 +42,12 @@
 #define VADDR_PAGE_LEVEL0_MASK      (((1 << 10) - 1) << 12)
 #define VADDR_PAGE_LEVEL1_MASK      (VADDR_PAGE_LEVEL0_MASK << 10)
 
-
 #define KILOBYTES(n)   (n * 1024)
 #define PAGE_SIZE      KILOBYTES(4)
+
+// The base virtual address of an application image. This needs to match the
+// starting address defined in user.ld
+#define USER_BASE 0x1000000
 
 #define PANIC(fmt, ...)                                                        \
 	do {                                                                       \
@@ -101,8 +108,57 @@ typedef struct {
 	U8 stack[8192]; 
 } Process;
 
+enum {
+	SCAUSE_INST_ADDR_MISALIGNED = 0,
+	SCAUSE_ACCESS_FAULT,
+	SCAUSE_ILLEGAL_INST,
+	SCAUSE_BREAKPOINT,
+	SCAUSE_LOAD_ADDR_MISALIGNED,
+	SCAUSE_LOAD_ACCESS_FAULT,
+	SCAUSE_STORE_AMO_ADDR_MISALIGNED,
+	SCAUSE_STORE_AMO_ACCESS_FAULT,
+	SCAUSE_ECALL_FROM_U_MODE,
+	SCAUSE_ECALL_FROM_S_MODE,
+	SCAUSE_RESERVED_10,
+	SCAUSE_RESERVED_11,
+	SCAUSE_INST_PAGE_FAULT,
+	SCAUSE_LOAD_PAGE_FAULT,
+	SCAUSE_RESERVED_14,
+	SCAUSE_STORE_AMO_PAGE_FAULT,
+	SCAUSE_RESERVED_16,
+	SCAUSE_RESERVED_17,
+	SCAUSE_SOFTWARE_CHECK,
+	SCAUSE_HARDWARE_ERROR,
+};
+
+static char *scause_strings[] = {
+	[SCAUSE_INST_ADDR_MISALIGNED]      = "instruction address misaligned",
+	[SCAUSE_ACCESS_FAULT]              = "access fault",
+	[SCAUSE_ILLEGAL_INST]              = "illegal instruction",
+	[SCAUSE_BREAKPOINT]                = "breakpoint",
+	[SCAUSE_LOAD_ADDR_MISALIGNED]      = "load address misaligned",
+	[SCAUSE_LOAD_ACCESS_FAULT]         = "load access fault",
+	[SCAUSE_STORE_AMO_ADDR_MISALIGNED] = "store/amo address misaligned",
+	[SCAUSE_STORE_AMO_ACCESS_FAULT]    = "store/amo access fault",
+	[SCAUSE_ECALL_FROM_U_MODE]         = "environment call from U-Mode",
+	[SCAUSE_ECALL_FROM_S_MODE]         = "environment call from S-Mode",
+	[SCAUSE_RESERVED_10]               = "reserved",
+	[SCAUSE_RESERVED_11]               = "reserved",
+	[SCAUSE_INST_PAGE_FAULT]           = "instruction page fault",
+	[SCAUSE_LOAD_PAGE_FAULT]           = "load page fault",
+	[SCAUSE_RESERVED_14]               = "reserved",
+	[SCAUSE_STORE_AMO_PAGE_FAULT]      = "store/amo page fault",
+	[SCAUSE_RESERVED_16]               = "reserved",
+	[SCAUSE_RESERVED_17]               = "reserved",
+	[SCAUSE_SOFTWARE_CHECK]            = "software check",
+	[SCAUSE_HARDWARE_ERROR]            = "hardware error",
+};
+
 // Linker symbols defined in kernel.ld
 extern U8 __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[], __kernel_base[];
+
+// symbols definined in shell.bin.o
+extern U8 _binary_shell_bin_size[], _binary_shell_bin_start[];
 
 static Paddr free_ram_cursor = (Paddr)__free_ram;
 
@@ -211,6 +267,15 @@ void *memset(void *buf, U8 val, U32 count) {
 	return buf;
 }
 
+void *memcpy(void *dest, void *src, U32 count) {
+	U8 *dest_u8 = (U8*)dest;
+	U8 *src_u8 = (U8*)src;
+	for (U32 i=0; i<count; ++i) {
+		dest_u8[i] = src_u8[i];
+	}
+	return dest;
+}
+
 Paddr alloc_pages(U32 n) {
 	U32 size = n * PAGE_SIZE;
 	if (free_ram_cursor + size > (U32)__free_ram_end) {
@@ -218,6 +283,7 @@ Paddr alloc_pages(U32 n) {
 	}
 	Paddr result = free_ram_cursor;
 	free_ram_cursor += size;
+	memset((void*)result, 0, size);
 	return result;
 }
 
@@ -260,7 +326,19 @@ void map_page(U32 *table1, U32 vaddr, Paddr paddr, U32 flags) {
     table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
 }
 
-Process *create_process(Paddr proc_start) {
+__attribute__((naked))
+void user_entry(void) {
+	__asm__ __volatile__(
+		"csrw sepc, %[user_base]\n"   // set location for sret to jump to
+		"csrw sstatus, %[sstatus]\n"  // enable hardware interrupts when entering U-Mode
+		"sret\n"
+		:
+		: [user_base] "r" (USER_BASE),
+		  [sstatus]   "r" (SSTATUS_SPIE)
+	);
+}
+
+Process *create_process(void *image, U32 image_size) {
 	Process *p = NULL;
 	int pid;
 	for (pid=0; pid<PROCS_MAX; ++pid) {
@@ -277,27 +355,37 @@ Process *create_process(Paddr proc_start) {
 	// put callee saved registers on the stack, because the first time this process is 
 	// entered a context switch happens popping these registers off the process's stack
 	U32 *sp = (U32*)&p->stack[sizeof(p->stack)];
-	*--sp = 0;              // s11
-	*--sp = 0;              // s10
-	*--sp = 0;              // s9
-	*--sp = 0;              // s8
-	*--sp = 0;              // s7
-	*--sp = 0;              // s6
-	*--sp = 0;              // s5
-	*--sp = 0;              // s4
-	*--sp = 0;              // s3
-	*--sp = 0;              // s2
-	*--sp = 0;              // s1
-	*--sp = 0;              // s0
-	*--sp = proc_start;     // ra
+	*--sp = 0;               // s11
+	*--sp = 0;               // s10
+	*--sp = 0;               // s9
+	*--sp = 0;               // s8
+	*--sp = 0;               // s7
+	*--sp = 0;               // s6
+	*--sp = 0;               // s5
+	*--sp = 0;               // s4
+	*--sp = 0;               // s3
+	*--sp = 0;               // s2
+	*--sp = 0;               // s1
+	*--sp = 0;               // s0
+	*--sp = (U32)user_entry; // ra
 
+	// map kernel pages
 	U32 *page_table = (U32*)alloc_pages(1);
 	for (Paddr paddr = (Paddr)__kernel_base; paddr < (Paddr)__free_ram_end; paddr += PAGE_SIZE) {
-		// Vaddr vaddr = paddr - (Paddr)__kernel_base;
-		// map_page(page_table, vaddr, paddr, PAGE_R|PAGE_W|PAGE_X);
 		map_page(page_table, paddr, paddr, PAGE_R|PAGE_W|PAGE_X);
 	}
+	
+	// map user pages
+	for (U32 offset=0; offset < image_size; offset += PAGE_SIZE) {
+		U32 remaining = image_size - offset;
+		U32 copy_size = remaining < PAGE_SIZE ? remaining : PAGE_SIZE;
 
+		Paddr page = alloc_pages(1);
+		memcpy((void*)page, image + offset, copy_size);
+
+		map_page(page_table, USER_BASE + offset, page, PAGE_U|PAGE_R|PAGE_W|PAGE_X);
+	}
+	
 	p->pid = pid;
 	p->state = PROC_RUNNABLE;
 	p->sp = (Vaddr)sp;
@@ -356,7 +444,9 @@ void handle_trap(TrapFrame *f) {
     U32 scause  = READ_CSR(scause);
     U32 stval   = READ_CSR(stval);
     U32 user_pc = READ_CSR(sepc);
-    PANIC("unexpected trap scause=%x, stval=%x, sepc=%x", scause, stval, user_pc);
+
+	char *scause_description = scause <= SCAUSE_HARDWARE_ERROR ? scause_strings[scause] : "";
+    PANIC("unexpected trap: scause=%x(%s), stval=%x, sepc=%x", scause, scause_description, stval, user_pc);
 }
 
 // entry point of the exception handler 
@@ -479,6 +569,7 @@ void yield(void) {
 	}
 }
 
+/*
 void proc_a_entry(void) {
 	printf("starting process A\n");
 	while (1) {
@@ -500,6 +591,7 @@ void proc_b_entry(void) {
 		delay(30000000);
 	}
 }
+*/
 
 void kernel_main(void) {
 	memset(__bss, 0, (U32)__bss_end - (U32)__bss);
@@ -510,8 +602,7 @@ void kernel_main(void) {
 	idle_proc.pid = -1;
 	current_proc = &idle_proc;
 
-	create_process((Paddr)proc_a_entry);
-	create_process((Paddr)proc_b_entry);
+	create_process(_binary_shell_bin_start, (U32)_binary_shell_bin_size);
 
 	yield();
 	PANIC("switched to idle process");
