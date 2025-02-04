@@ -1,16 +1,6 @@
+#include "common.h"
+
 #define PROCS_MAX 8
-
-#define va_list    __builtin_va_list
-#define va_start   __builtin_va_start
-#define va_end     __builtin_va_end
-#define va_arg     __builtin_va_arg
-#define align_up   __builtin_align_up
-#define is_aligned __builtin_is_aligned
-#define offsetof   __builtin_offsetof
-
-#define true  1
-#define false 0
-#define NULL  ((void *) 0)
 
 // SATP register (supervisor address translation and protection)
 // |  31  |     30 - 22   |                 21 - 0                      |
@@ -42,7 +32,6 @@
 #define VADDR_PAGE_LEVEL0_MASK      (((1 << 10) - 1) << 12)
 #define VADDR_PAGE_LEVEL1_MASK      (VADDR_PAGE_LEVEL0_MASK << 10)
 
-#define KILOBYTES(n)   (n * 1024)
 #define PAGE_SIZE      KILOBYTES(4)
 
 // The base virtual address of an application image. This needs to match the
@@ -68,14 +57,6 @@
 		__asm__ __volatile__("csrw " #reg ", %0" ::"r"(__tmp));                \
 	} while (0)
 
-typedef int bool;
-typedef unsigned char U8;
-typedef unsigned short U16;
-typedef unsigned int U32;
-typedef unsigned long long U64;
-typedef U32 Paddr;                 // physical address
-typedef U32 Vaddr;                 // virtual address
-
 typedef struct {
 	long error;
 	union {
@@ -98,6 +79,7 @@ struct TrapFrame {
 typedef enum {
 	PROC_UNUSED,
 	PROC_RUNNABLE,
+	PROC_EXITED,
 } ProcState;
 
 typedef struct {
@@ -191,89 +173,17 @@ void putchar(char ch) {
     sbi_call(ch, 0, 0, 0, 0, 0, 0, eid);
 }
 
-void printf(char *fmt, ...) {
-	va_list args;
-	va_start(args, fmt);
+int getchar(void) {
+	long eid = 2; // Console Getchar
+	SBI_Ret ret = sbi_call(0, 0, 0, 0, 0, 0, 0, eid);
 
-	char *c = fmt;
-	while (*c != 0) {
-		if (*c == '%') {
-			++c;
-			switch (*c) {
-			case 'd': {
-				int val = va_arg(args, int);
-
-				if (val < 0) {
-					putchar('-');
-					val *= -1;
-				}
-
-				int divisor = 1;
-				while (val / (divisor*10)) divisor *= 10;
-				
-				while (divisor > 0) {
-					int digit = val / divisor;
-					putchar(digit + '0');
-					val %= divisor;
-					divisor /= 10;
-				}
-
-				break;
-			}
-			case 'x': {
-				U32 val = va_arg(args, U32);
-
-				U32 divisor = 1;
-				while (divisor < 0x10000000 && val / (divisor*16)) {
-					divisor *= 16;
-				}
-				
-				putchar('0');
-				putchar('x');
-				while (divisor > 0) {
-					char c = "0123456789abcdef"[val / divisor];
-					putchar(c);
-					val %= divisor;
-					divisor /= 16;
-				}
-				break;
-			}
-			case 's': {
-				for (char *s = va_arg(args, char*); *s; ++s) {
-					putchar(*s);
-				}
-				break;
-			}
-			case '%':
-				putchar('%');
-				break;
-			default: 
-				break;
-			}
-		} else {
-			putchar(*c);
-		}
-		++c;
-	}
-
-	va_end(args);
+	// NOTE(shaw): error is used here because getchar is a legacy extension in sbi, 
+	// so it follows a different calling convention than most other sbi functions
+	return (int)ret.error;
 }
 
-void *memset(void *buf, U8 val, U32 count) {
-	U8 *p = (U8*)buf;
-	for (U32 i=0; i<count; ++i) {
-		p[i] = val;
-	}
-	return buf;
-}
-
-void *memcpy(void *dest, void *src, U32 count) {
-	U8 *dest_u8 = (U8*)dest;
-	U8 *src_u8 = (U8*)src;
-	for (U32 i=0; i<count; ++i) {
-		dest_u8[i] = src_u8[i];
-	}
-	return dest;
+void exit(int code) {
+	PANIC("exit called in kernel space with code %d", code);
 }
 
 Paddr alloc_pages(U32 n) {
@@ -287,7 +197,7 @@ Paddr alloc_pages(U32 n) {
 	return result;
 }
 
-void map_page2(U32 *table1, Vaddr vaddr, Paddr paddr, U32 flags) {
+void map_page(U32 *table1, Vaddr vaddr, Paddr paddr, U32 flags) {
 	if (!is_aligned(vaddr, PAGE_SIZE)) PANIC("unaligned vaddr %x", vaddr);
 	if (!is_aligned(paddr, PAGE_SIZE)) PANIC("unaligned paddr %x", paddr);
 
@@ -304,26 +214,6 @@ void map_page2(U32 *table1, Vaddr vaddr, Paddr paddr, U32 flags) {
 	U32 t0_index = (vaddr & VADDR_PAGE_LEVEL0_MASK) >> VADDR_PAGE_LEVEL0_SHIFT;
 	U32 physical_page_num = paddr / PAGE_SIZE;
 	table0[t0_index] = (physical_page_num << PTE_PAGE_NUMBER_SHIFT) | flags | PAGE_V;
-}
-
-void map_page(U32 *table1, U32 vaddr, Paddr paddr, U32 flags) {
-    if (!is_aligned(vaddr, PAGE_SIZE))
-        PANIC("unaligned vaddr %x", vaddr);
-
-    if (!is_aligned(paddr, PAGE_SIZE))
-        PANIC("unaligned paddr %x", paddr);
-
-    U32 vpn1 = (vaddr >> 22) & 0x3ff;
-    if ((table1[vpn1] & PAGE_V) == 0) {
-        // Create the non-existent 2nd level page table.
-        U32 pt_paddr = alloc_pages(1);
-        table1[vpn1] = ((pt_paddr / PAGE_SIZE) << 10) | PAGE_V;
-    }
-
-    // Set the 2nd level page table entry to map the physical page.
-    U32 vpn0 = (vaddr >> 12) & 0x3ff;
-    U32 *table0 = (U32 *) ((table1[vpn1] >> 10) * PAGE_SIZE);
-    table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
 }
 
 __attribute__((naked))
@@ -439,14 +329,83 @@ void switch_context(U32 *prev_sp, U32 *next_sp) {
 	);
 }
 
+void yield(void) {
+	Process *next = &idle_proc;
+	for (int i=0; i<PROCS_MAX; ++i) {
+		Process *p = &procs[(current_proc->pid + 1 + i) % PROCS_MAX];
+		if (p->state == PROC_RUNNABLE) {
+			next = p;
+			break;
+		}
+	}
+
+	if (next != current_proc) {
+		if (next != &idle_proc) {
+			__asm__ __volatile__(
+				// enable paging, and set the page number where the level1 page table lives for this process
+				"sfence.vma\n"
+				"csrw satp, %[satp]\n"
+				"sfence.vma\n"
+				// save the next procs stack top in sscratch, this enables the exception
+				// handler to have a stable reference to this procs stack, in the case that sp
+				// is corrupted
+				"csrw sscratch, %[stack_top]\n"
+				:
+				: [satp]      "r" (SATP_SV32 | ((U32)next->page_table / PAGE_SIZE)),
+				  [stack_top] "r" ((U32)&next->stack[sizeof(next->stack)])
+			);
+		}
+		Process *prev = current_proc;
+		current_proc = next;
+		switch_context(&prev->sp, &next->sp);
+	}
+}
+
+// a3 -> syscall_num
+// a0, a1, a2 -> arguments
+void handle_syscall(TrapFrame *f) {
+	switch (f->a3) {
+		case SYSCALL_PUTCHAR:
+			putchar(f->a0);
+			break;
+		case SYSCALL_GETCHAR: {
+			int c;
+			for (c = getchar(); c == -1; c = getchar()) {
+				yield();
+			}
+			f->a0 = c;
+			break;
+		}
+		case SYSCALL_EXIT: {
+			current_proc->state = PROC_EXITED;
+			printf("process %d exited with code %d\n", current_proc->pid, f->a0);
+			// TODO(shaw): clean up process resources
+			yield();
+			PANIC("unreachable");
+			break;
+		}
+		default:
+			PANIC("unimplemented syscall: %u\n", f->a3);
+			break;
+	}
+}
+
 void handle_trap(TrapFrame *f) {
 	(void)f;
     U32 scause  = READ_CSR(scause);
     U32 stval   = READ_CSR(stval);
     U32 user_pc = READ_CSR(sepc);
 
-	char *scause_description = scause <= SCAUSE_HARDWARE_ERROR ? scause_strings[scause] : "";
-    PANIC("unexpected trap: scause=%x(%s), stval=%x, sepc=%x", scause, scause_description, stval, user_pc);
+	if (scause == SCAUSE_ECALL_FROM_U_MODE) {
+		handle_syscall(f);
+		// advance past the ecall instruction so when we switch back to user
+		// mode and jump to sepc, we continue after the ecall instruction
+		user_pc += 4;             
+		WRITE_CSR(sepc, user_pc); 
+	} else {
+		char *scause_description = scause <= SCAUSE_HARDWARE_ERROR ? scause_strings[scause] : "";
+		PANIC("unexpected trap: scause=%x(%s), stval=%x, sepc=%x", scause, scause_description, stval, user_pc);
+	}
 }
 
 // entry point of the exception handler 
@@ -538,60 +497,6 @@ void delay(U32 cycles) {
     for (U32 i = 0; i < cycles; i++)
         __asm__ __volatile__("nop");
 }
-
-void yield(void) {
-	Process *next = &idle_proc;
-	for (int i=0; i<PROCS_MAX; ++i) {
-		Process *p = &procs[(current_proc->pid + 1 + i) % PROCS_MAX];
-		if (p->state == PROC_RUNNABLE) {
-			next = p;
-			break;
-		}
-	}
-
-	if (next != current_proc) {
-		__asm__ __volatile__(
-			// enable paging, and set the page number where the level1 page table lives for this process
-			"sfence.vma\n"
-			"csrw satp, %[satp]\n"
-			"sfence.vma\n"
-			// save the next procs stack top in sscratch, this enables the exception
-			// handler to have a stable reference to this procs stack, in the case that sp
-			// is corrupted
-			"csrw sscratch, %[stack_top]\n"
-			:
-			: [satp]      "r" (SATP_SV32 | ((U32)next->page_table / PAGE_SIZE)),
-			  [stack_top] "r" ((U32)&next->stack[sizeof(next->stack)])
-		);
-		Process *prev = current_proc;
-		current_proc = next;
-		switch_context(&prev->sp, &next->sp);
-	}
-}
-
-/*
-void proc_a_entry(void) {
-	printf("starting process A\n");
-	while (1) {
-		putchar('A');
-		yield();
-		delay(30000000);
-		// __asm__ __volatile__(
-			// "li sp, 0xdeadbeef\n"  // set an invalid address to sp
-			// "unimp"                // trigger an exception
-		// );
-	}
-}
-
-void proc_b_entry(void) {
-	printf("starting process B\n");
-	while (1) {
-		putchar('B');
-		yield();
-		delay(30000000);
-	}
-}
-*/
 
 void kernel_main(void) {
 	memset(__bss, 0, (U32)__bss_end - (U32)__bss);

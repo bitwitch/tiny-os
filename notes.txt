@@ -1,3 +1,22 @@
+2025-02-04
+--------------------------------------------------------------------------------
+Today when implementing the shell in userland I got the following linker error
+despite not using memset at all: "ld.lld: error: undefined symbol: memset"
+
+I traced the source of the error to a line where I was declaring a buffer for the
+command line as follows: char cmdline[256] = {0}; It seems that clang is
+generating a memset for this line. I checked out the docs for clang and learned
+that even when using the -ffreestanding flag, you have to provide certain
+functions yourself. 
+
+From the docs:
+
+-ffreestanding
+	Indicate that the file should be compiled for a freestanding, not a hosted,
+	environment. Note that it is assumed that a freestanding environment will
+	additionally provide memcpy, memmove, memset and memcmp implementations, as
+	these are needed for efficient codegen for many programs.
+
 2025-02-03
 --------------------------------------------------------------------------------
 Paging in RISC-V: https://osdev.wiki/wiki/RISC-V_Paging
