@@ -1,4 +1,41 @@
+TODO:
+[ ] VirtioBlkRequest needs to support multiple sectors: i.e. data[][512],
+    currently just using a single sector
+    - this will also require managing the memory for all the requests
+
+
 2025-02-04
+--------------------------------------------------------------------------------
+Virtio spec for virtqueues: https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html#x1-230005
+
+The virtio spec for virtqueue initializations says step 6 is to write the
+alignment of the used queue to the QueueAlign register and that this must be a
+power of 2. However, Nuta writes 0. According to the spec this is incorrect.
+
+From the spec:
+Writing to this register notifies the device about alignment boundary of the
+Used Ring in bytes. This value should be a power of 2 and applies to the queue
+selected by writing to QueueSel.
+
+Also for step 7, the spec says to write the physical page NUMBER of the first
+page of the queue to the QueuePFN register. It explicitly says "this is an index
+number of a page". However, Nuta writes the physical address of the page, not
+the NUMBER. I believe this is a bug too.
+
+From the spec: 
+Writing to this register notifies the device about location of the virtual queue
+in the Guest’s physical address space. This value is the index number of a page
+starting with the queue Descriptor Table. Value zero (0x0) means physical
+address zero (0x00000000) and is illegal. When the driver stops using the queue
+it writes zero (0x0) to this register. Reading from this register returns the
+currently used page number of the queue, therefore a value other than zero (0x0)
+means that the queue is in use. Both read and write accesses apply to the queue
+selected by writing to QueueSel. 
+
+
+what is __sync_synchronize() and why is it used in virtq_kick()
+
+2025-02-03
 --------------------------------------------------------------------------------
 Today when implementing the shell in userland I got the following linker error
 despite not using memset at all: "ld.lld: error: undefined symbol: memset"
@@ -17,7 +54,7 @@ From the docs:
 	additionally provide memcpy, memmove, memset and memcmp implementations, as
 	these are needed for efficient codegen for many programs.
 
-2025-02-03
+2025-02-02
 --------------------------------------------------------------------------------
 Paging in RISC-V: https://osdev.wiki/wiki/RISC-V_Paging
 
@@ -47,7 +84,7 @@ me suspect that info mem doesn't work properly, maybe because I'm on windows?
 but im not sure there may be another error somewhere.
 
 
-2025-02-02
+2025-02-01
 --------------------------------------------------------------------------------
 In yield, when context switching, we first save the very beginning of the stack
 in sscratch so that the exception handler has a stable reference to the
@@ -63,7 +100,7 @@ right with me, but I will continue on with the book, maybe I will learn
 something in the future that clarifies this.
 
 
-2025-02-01
+2025-01-31
 --------------------------------------------------------------------------------
 I still don't understand why declaring a variable as an array on the c side
 allows you to access a linker symbol without taking address, but using a pointer
@@ -82,7 +119,7 @@ you can use the variable like: U32 address = my_symbol; However, if you declare
 it as extern char *my_symbol; then it doesn't work, you still have
 
 
-2025-01-31
+2025-01-30
 --------------------------------------------------------------------------------
 
 Machine Level CSRs

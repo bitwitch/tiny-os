@@ -57,6 +57,88 @@
 		__asm__ __volatile__("csrw " #reg ", %0" ::"r"(__tmp));                \
 	} while (0)
 
+#define SECTOR_SIZE       512
+#define VIRTQ_MAX_ENTRIES 16
+#define VIRTIO_DEVICE_BLK 2
+#define VIRTIO_BLK_PADDR  0x10001000
+#define VIRTIO_MAGIC      0x74726976
+#define VIRTIO_REG_MAGIC             0x00
+#define VIRTIO_REG_VERSION           0x04
+#define VIRTIO_REG_DEVICE_ID         0x08
+#define VIRTIO_REG_VENDOR_ID         0x0c
+#define VIRTIO_REG_DEVICE_FEATS      0x10
+#define VIRTIO_REG_DEVICE_FEATS_SEL  0x14
+#define VIRTIO_REG_DRIVER_FEATS      0x20
+#define VIRTIO_REG_DRIVER_FEATS_SEL  0x24
+#define VIRTIO_REG_QUEUE_SEL         0x30
+#define VIRTIO_REG_QUEUE_NUM_MAX     0x34
+#define VIRTIO_REG_QUEUE_NUM         0x38
+#define VIRTIO_REG_QUEUE_ALIGN       0x3c
+#define VIRTIO_REG_QUEUE_PFN         0x40
+#define VIRTIO_REG_QUEUE_READY       0x44
+#define VIRTIO_REG_QUEUE_NOTIFY      0x50
+#define VIRTIO_REG_DEVICE_STATUS     0x70
+#define VIRTIO_REG_DEVICE_CONFIG     0x100
+#define VIRTIO_STATUS_ACK       (1 << 0)
+#define VIRTIO_STATUS_DRIVER    (1 << 1)
+#define VIRTIO_STATUS_DRIVER_OK (1 << 2)
+#define VIRTIO_STATUS_FEATS_OK  (1 << 3)
+#define VIRTQ_DESC_F_NEXT          1
+#define VIRTQ_DESC_F_WRITE         2
+#define VIRTQ_AVAIL_F_NO_INTERRUPT 1
+#define VIRTIO_BLK_T_IN           0 // a read request
+#define VIRTIO_BLK_T_OUT          1 // a write request
+#define VIRTIO_BLK_T_FLUSH        4 
+#define VIRTIO_BLK_T_DISCARD      11 
+#define VIRTIO_BLK_T_WRITE_ZEROES 13 
+
+typedef struct VirtqDesc VirtqDesc; // virtqueue descriptor
+struct VirtqDesc {
+	U64 addr;
+	U32 len;
+	U16 flags;
+	U16 next;
+} __attribute__((packed));
+
+typedef struct VirtqAvail VirtqAvail;
+struct VirtqAvail {
+	U16 flags;
+	U16 index;
+	U16 ring[VIRTQ_MAX_ENTRIES];
+} __attribute__((packed));
+
+typedef struct VirtqUsedEntry VirtqUsedEntry;
+struct VirtqUsedEntry {
+	U32 id;
+	U32 len;
+} __attribute__((packed));
+
+typedef struct VirtqUsed VirtqUsed;
+struct VirtqUsed {
+	U16 flags;
+	U16 index;
+	VirtqUsedEntry ring[VIRTQ_MAX_ENTRIES];
+} __attribute__((packed));
+
+typedef struct Virtq Virtq;
+struct Virtq {
+	VirtqDesc descs[VIRTQ_MAX_ENTRIES];
+	VirtqAvail avail;
+	VirtqUsed used __attribute__((aligned(PAGE_SIZE)));
+	int queue_index;
+	volatile U16 *used_index_ptr;
+	U16 last_used_index;
+} __attribute__((packed));
+
+typedef struct VirtioBlkRequest VirtioBlkRequest;
+struct VirtioBlkRequest {
+	U32 type;
+	U32 reserved;
+	U64 sector;
+	U8 data[SECTOR_SIZE];
+	U8 status;
+} __attribute__((packed));
+
 typedef struct {
 	long error;
 	union {
@@ -147,6 +229,159 @@ static Paddr free_ram_cursor = (Paddr)__free_ram;
 static Process procs[PROCS_MAX]; 
 static Process *current_proc;
 static Process idle_proc;
+static Virtq *virtio_blk_virtq;
+static U64 virtio_blk_num_sectors;
+
+Paddr alloc_pages(U32 n);
+
+U32 virtio_reg_read32(U32 offset) {
+    return *((volatile U32 *) (VIRTIO_BLK_PADDR + offset));
+}
+
+U64 virtio_reg_read64(U32 offset) {
+    return *((volatile U64 *) (VIRTIO_BLK_PADDR + offset));
+}
+
+void virtio_reg_write32(U32 offset, U32 value) {
+    *((volatile U32 *) (VIRTIO_BLK_PADDR + offset)) = value;
+}
+
+void virtio_reg_fetch_and_or32(U32 offset, U32 value) {
+    virtio_reg_write32(offset, virtio_reg_read32(offset) | value);
+}
+
+// see legacy interface virtq configuration in spec:
+// https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html#x1-1560004
+Virtq *virtq_init(int index) {
+	virtio_reg_write32(VIRTIO_REG_QUEUE_SEL, index); 
+
+	if (virtio_reg_read32(VIRTIO_REG_QUEUE_PFN) != 0) {
+		// queue already in use
+		printf("error: failed to initialize virtqueue %d: already in use\n", index);
+		return NULL;
+	}
+
+	U32 queue_num_max = virtio_reg_read32(VIRTIO_REG_QUEUE_NUM_MAX);
+	if (queue_num_max == 0) {
+		printf("error: failed to initialize virtqueue %d: not available\n", index);
+		return NULL;
+	}
+
+	if (VIRTQ_MAX_ENTRIES > queue_num_max) {
+		printf("warning: virtio-blk device has a max queue size of %d, but the driver is using a queue size of %d\n",
+			queue_num_max, VIRTQ_MAX_ENTRIES);
+	}
+
+	U32 num_pages = align_up(sizeof(Virtq), PAGE_SIZE) / PAGE_SIZE;
+	Paddr paddr = alloc_pages(num_pages);
+
+	virtio_reg_write32(VIRTIO_REG_QUEUE_NUM, VIRTQ_MAX_ENTRIES);
+	virtio_reg_write32(VIRTIO_REG_QUEUE_ALIGN, PAGE_SIZE);
+	// virtio_reg_write32(VIRTIO_REG_QUEUE_PFN, paddr / PAGE_SIZE);
+	virtio_reg_write32(VIRTIO_REG_QUEUE_PFN, paddr);
+
+	Virtq *virtq = (Virtq*)paddr;
+	virtq->queue_index = index;
+	virtq->used_index_ptr = (volatile U16*)&virtq->used.index;
+
+	return virtq;
+}
+
+// see https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html#x1-910003
+void virtio_blk_init(void) {
+	U32 magic = virtio_reg_read32(VIRTIO_REG_MAGIC);
+	if (magic != VIRTIO_MAGIC)
+		PANIC("virtio: invalid magic value: %x", magic);
+
+	U32 virtio_version = virtio_reg_read32(VIRTIO_REG_VERSION);
+	if (virtio_version != 1)
+		PANIC("virtio: invalid version: %x", virtio_version);
+
+	U32 device_id = virtio_reg_read32(VIRTIO_REG_DEVICE_ID);
+	if (device_id != VIRTIO_DEVICE_BLK)
+		PANIC("virtio: invalid device id: %x", device_id);
+
+	virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, 0); // reset the device
+	virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACK);
+	virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_DRIVER);
+
+	// TODO(shaw);
+	// Read device feature bits, and write the subset of feature bits
+	// understood by the OS and driver to the device. During this step the
+	// driver MAY read (but MUST NOT write) the device-specific configuration
+	// fields to check that it can support the device before accepting it.
+
+	virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_FEATS_OK); 
+
+	U32 device_status = virtio_reg_read32(VIRTIO_REG_DEVICE_STATUS);
+	if ((device_status & VIRTIO_STATUS_FEATS_OK) == 0) {
+		PANIC("virtio: virtio-blk device does not support the driver's subset of features");
+	}
+	
+	virtio_blk_virtq = virtq_init(0);
+	if (virtio_blk_virtq == NULL) {
+		PANIC("virtio: failed to initialize virtqueue");
+	}
+
+	virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_DRIVER_OK);
+
+	// see https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html#x1-2440004
+	// for device configuration layout
+	virtio_blk_num_sectors = virtio_reg_read64(VIRTIO_REG_DEVICE_CONFIG + 0);
+
+	printf("virtio-blk device initialized\n");
+}
+
+void virtq_kick(Virtq *vq, int desc_head_index) {
+	vq->avail.ring[vq->avail.index % VIRTQ_MAX_ENTRIES] = desc_head_index;
+	++vq->avail.index;
+	__sync_synchronize();
+	virtio_reg_write32(VIRTIO_REG_QUEUE_NOTIFY, vq->queue_index);
+	++vq->last_used_index;
+}
+
+bool virtq_is_busy(Virtq *vq) {
+	return vq->last_used_index != *vq->used_index_ptr;
+}
+
+void virtio_blk_read(void *buf, U64 sector) {
+	if (sector >= virtio_blk_num_sectors) {
+		printf("virtio: tried to read sector %x, but virtio-blk device only contains %x sectors\n",
+				sector, virtio_blk_num_sectors);
+		return;
+	}
+
+	VirtioBlkRequest req = {0};
+	req.type = VIRTIO_BLK_T_IN;
+	req.sector = sector;
+
+	Virtq *vq = virtio_blk_virtq;
+	U64 req_addr = (U64)&req;
+	vq->descs[0].addr  = req_addr;
+	vq->descs[0].len   = sizeof(U32) * 2 + sizeof(U64);
+	vq->descs[0].flags = VIRTQ_DESC_F_NEXT;
+	vq->descs[0].next  = 1;
+
+	vq->descs[1].addr  = req_addr + offsetof(VirtioBlkRequest, data);
+	vq->descs[1].len   = SECTOR_SIZE;
+	vq->descs[1].flags = VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE; // set the buffer as device writable
+	vq->descs[1].next  = 2;
+
+	vq->descs[2].addr  = req_addr + offsetof(VirtioBlkRequest, status);
+	vq->descs[2].len   = sizeof(U8);
+	vq->descs[2].flags = VIRTQ_DESC_F_WRITE;
+
+	virtq_kick(vq, 0);
+
+	while (virtq_is_busy(vq));
+
+	if (req.status != 0) {
+		printf("virtio: failed to read sector=%d status=%d\n", sector, req.status);
+		return;
+	}
+
+	memcpy(buf, req.data, SECTOR_SIZE);
+}
 
 SBI_Ret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
 		         long fid, long eid)
@@ -264,7 +499,10 @@ Process *create_process(void *image, U32 image_size) {
 	for (Paddr paddr = (Paddr)__kernel_base; paddr < (Paddr)__free_ram_end; paddr += PAGE_SIZE) {
 		map_page(page_table, paddr, paddr, PAGE_R|PAGE_W|PAGE_X);
 	}
-	
+
+	// map virtio-blk device mmio region
+	map_page(page_table, VIRTIO_BLK_PADDR, VIRTIO_BLK_PADDR, PAGE_R|PAGE_W);
+
 	// map user pages
 	for (U32 offset=0; offset < image_size; offset += PAGE_SIZE) {
 		U32 remaining = image_size - offset;
@@ -499,15 +737,22 @@ void delay(U32 cycles) {
 }
 
 void kernel_main(void) {
+	putchar('\n');
+
 	memset(__bss, 0, (U32)__bss_end - (U32)__bss);
 	WRITE_CSR(stvec, (U32)kernel_entry);
+	virtio_blk_init();
 
-	printf("\n\n");
+	char buf[SECTOR_SIZE];
+	virtio_blk_read(buf, 0);
+	printf("first sector: %s\n", buf);
 
 	idle_proc.pid = -1;
 	current_proc = &idle_proc;
 
 	create_process(_binary_shell_bin_start, (U32)_binary_shell_bin_size);
+
+	putchar('\n');
 
 	yield();
 	PANIC("switched to idle process");
