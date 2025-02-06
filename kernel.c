@@ -70,6 +70,7 @@
 #define VIRTIO_REG_DEVICE_FEATS_SEL  0x14
 #define VIRTIO_REG_DRIVER_FEATS      0x20
 #define VIRTIO_REG_DRIVER_FEATS_SEL  0x24
+#define VIRTIO_REG_GUEST_PAGE_SIZE   0x28
 #define VIRTIO_REG_QUEUE_SEL         0x30
 #define VIRTIO_REG_QUEUE_NUM_MAX     0x34
 #define VIRTIO_REG_QUEUE_NUM         0x38
@@ -253,6 +254,8 @@ void virtio_reg_fetch_and_or32(U32 offset, U32 value) {
 // see legacy interface virtq configuration in spec:
 // https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html#x1-1560004
 Virtq *virtq_init(int index) {
+	virtio_reg_write32(VIRTIO_REG_GUEST_PAGE_SIZE, PAGE_SIZE);
+
 	virtio_reg_write32(VIRTIO_REG_QUEUE_SEL, index); 
 
 	if (virtio_reg_read32(VIRTIO_REG_QUEUE_PFN) != 0) {
@@ -277,8 +280,7 @@ Virtq *virtq_init(int index) {
 
 	virtio_reg_write32(VIRTIO_REG_QUEUE_NUM, VIRTQ_MAX_ENTRIES);
 	virtio_reg_write32(VIRTIO_REG_QUEUE_ALIGN, PAGE_SIZE);
-	// virtio_reg_write32(VIRTIO_REG_QUEUE_PFN, paddr / PAGE_SIZE);
-	virtio_reg_write32(VIRTIO_REG_QUEUE_PFN, paddr);
+	virtio_reg_write32(VIRTIO_REG_QUEUE_PFN, paddr / PAGE_SIZE);
 
 	Virtq *virtq = (Virtq*)paddr;
 	virtq->queue_index = index;
@@ -344,16 +346,18 @@ bool virtq_is_busy(Virtq *vq) {
 	return vq->last_used_index != *vq->used_index_ptr;
 }
 
-void virtio_blk_read(void *buf, U64 sector) {
+void virtio_blk_read_write_sector(void *buf, U64 sector, bool is_write) {
 	if (sector >= virtio_blk_num_sectors) {
-		printf("virtio: tried to read sector %x, but virtio-blk device only contains %x sectors\n",
-				sector, virtio_blk_num_sectors);
+		printf("virtio: tried to %s sector %x, but virtio-blk device only contains %x sectors\n",
+				is_write ? "write" : "read", sector, virtio_blk_num_sectors);
 		return;
 	}
 
 	VirtioBlkRequest req = {0};
-	req.type = VIRTIO_BLK_T_IN;
+	req.type = is_write ? VIRTIO_BLK_T_OUT : VIRTIO_BLK_T_IN;
 	req.sector = sector;
+
+	if (is_write) memcpy(req.data, buf, SECTOR_SIZE);
 
 	Virtq *vq = virtio_blk_virtq;
 	U64 req_addr = (U64)&req;
@@ -364,7 +368,8 @@ void virtio_blk_read(void *buf, U64 sector) {
 
 	vq->descs[1].addr  = req_addr + offsetof(VirtioBlkRequest, data);
 	vq->descs[1].len   = SECTOR_SIZE;
-	vq->descs[1].flags = VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE; // set the buffer as device writable
+	// confusingly, if this is a read we set VIRTQ_DESC_F_WRITE, because we are setting the buffer as DEVICE writable
+	vq->descs[1].flags = VIRTQ_DESC_F_NEXT | (is_write ? 0 : VIRTQ_DESC_F_WRITE); 
 	vq->descs[1].next  = 2;
 
 	vq->descs[2].addr  = req_addr + offsetof(VirtioBlkRequest, status);
@@ -380,7 +385,15 @@ void virtio_blk_read(void *buf, U64 sector) {
 		return;
 	}
 
-	memcpy(buf, req.data, SECTOR_SIZE);
+	if (!is_write) memcpy(buf, req.data, SECTOR_SIZE);
+}
+
+inline void virtio_blk_read_sector(void *buf, U64 sector) {
+	virtio_blk_read_write_sector(buf, sector, false);
+}
+
+inline void virtio_blk_write_sector(void *buf, U64 sector) {
+	virtio_blk_read_write_sector(buf, sector, true);
 }
 
 SBI_Ret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
@@ -742,10 +755,6 @@ void kernel_main(void) {
 	memset(__bss, 0, (U32)__bss_end - (U32)__bss);
 	WRITE_CSR(stvec, (U32)kernel_entry);
 	virtio_blk_init();
-
-	char buf[SECTOR_SIZE];
-	virtio_blk_read(buf, 0);
-	printf("first sector: %s\n", buf);
 
 	idle_proc.pid = -1;
 	current_proc = &idle_proc;

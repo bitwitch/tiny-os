@@ -3,6 +3,16 @@ TODO:
     currently just using a single sector
     - this will also require managing the memory for all the requests
 
+[ ] %u format specifier in printf
+
+2025-02-05
+--------------------------------------------------------------------------------
+I figured out the issues from yesterday regarding initializing virtqueue's.
+There was a step in the spec, mentioned before step 1 (confusing..), to write
+the page size to the GuestPageSize register before initializing virtqueues.
+After doing this, then I can write the page NUMBER not physical address to the
+QueuePFN register, and PAGE_SIZE to the QueueAlign register and the virtio-blk
+device works as expected.
 
 2025-02-04
 --------------------------------------------------------------------------------
