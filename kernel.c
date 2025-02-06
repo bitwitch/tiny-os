@@ -2,6 +2,11 @@
 
 #define PROCS_MAX 8
 
+#define FILE_SIZE_MAX  KILOBYTES(32)
+#define FILES_MAX      32
+#define SECTOR_SIZE    512
+#define DISK_SIZE      align_up(FILES_MAX * sizeof(File), SECTOR_SIZE)
+
 // SATP register (supervisor address translation and protection)
 // |  31  |     30 - 22   |                 21 - 0                      |
 // | Mode | addr space id | phyiscal page number where page table lives |
@@ -57,7 +62,6 @@
 		__asm__ __volatile__("csrw " #reg ", %0" ::"r"(__tmp));                \
 	} while (0)
 
-#define SECTOR_SIZE       512
 #define VIRTQ_MAX_ENTRIES 16
 #define VIRTIO_DEVICE_BLK 2
 #define VIRTIO_BLK_PADDR  0x10001000
@@ -139,6 +143,35 @@ struct VirtioBlkRequest {
 	U8 data[SECTOR_SIZE];
 	U8 status;
 } __attribute__((packed));
+
+typedef struct TarHeader TarHeader;
+struct TarHeader {
+	char name[100];
+	char mode[8];
+	char uid[8];
+	char gid[8];
+	char size[12];
+	char mtime[12];
+	char checksum[8];
+	char type;
+	char linkname[100];
+	char magic[6];
+	char version[2];
+	char uname[32];
+	char gname[32];
+	char devmajor[8];
+	char devminor[8];
+	char prefix[155];
+	char padding[12];
+	char data[];     // Array pointing to the data area following the header
+} __attribute__((packed));
+
+typedef struct {
+	bool in_use;
+	U32 size;
+	U8 *data;
+	char name[100];
+} File;
 
 typedef struct {
 	long error;
@@ -230,8 +263,13 @@ static Paddr free_ram_cursor = (Paddr)__free_ram;
 static Process procs[PROCS_MAX]; 
 static Process *current_proc;
 static Process idle_proc;
+
 static Virtq *virtio_blk_virtq;
 static U64 virtio_blk_num_sectors;
+
+static File files[FILES_MAX];
+static U32 num_files;
+static U8 disk[DISK_SIZE];
 
 Paddr alloc_pages(U32 n);
 
@@ -394,6 +432,48 @@ inline void virtio_blk_read_sector(void *buf, U64 sector) {
 
 inline void virtio_blk_write_sector(void *buf, U64 sector) {
 	virtio_blk_read_write_sector(buf, sector, true);
+}
+
+U32 u32_from_octal(char *oct, int len) {
+	int dec = 0;
+	for (int i=0; i<len; ++i) {
+		if (oct[i] < '0' || oct[i] > '7')
+			break;
+		dec = dec * 8 + (oct[i] - '0');
+	}
+	return dec;
+}
+
+void filesystem_init(void) {
+	// read entire disk into memory	
+	U64 disk_sectors = DISK_SIZE / SECTOR_SIZE;
+	for (U64 sector=0; sector < disk_sectors; ++sector) {
+		virtio_blk_read_sector(disk + sector * SECTOR_SIZE, sector);
+	}
+	
+	// parse disk memory into files
+	for (U8 *p = disk; p < disk + DISK_SIZE; ) {
+		TarHeader *header = (TarHeader*)p;
+
+		if (header->name[0] == '\0') break;
+
+		if (0 != strcmp(header->magic, "ustar")) {
+			PANIC("failed to initialize filesystem: invalid tar header: filename=%s magic=%s", 
+				header->name, header->magic);
+		}
+
+		File *file = &files[num_files++];
+
+		file->in_use = true;
+		memcpy(file->name, header->name, 100);
+		// TODO(shaw): implement strcpy
+		// strcpy(file->name, header->name);
+		file->size = u32_from_octal(header->size, sizeof(header->size));
+		file->data = (U8*)header->data;
+		printf("file: %s, size=%d\n\n%s\n\n", file->name, file->size, file->data);
+
+		p += align_up(sizeof(TarHeader) + file->size, SECTOR_SIZE);
+	}
 }
 
 SBI_Ret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
@@ -755,6 +835,8 @@ void kernel_main(void) {
 	memset(__bss, 0, (U32)__bss_end - (U32)__bss);
 	WRITE_CSR(stvec, (U32)kernel_entry);
 	virtio_blk_init();
+
+	filesystem_init();
 
 	idle_proc.pid = -1;
 	current_proc = &idle_proc;

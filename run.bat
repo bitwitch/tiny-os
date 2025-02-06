@@ -14,12 +14,16 @@ if %errorlevel% neq 0 exit /b %errorlevel%
 %OBJCOPY% -Ibinary -Oelf32-littleriscv shell.bin shell.bin.o
 if %errorlevel% neq 0 exit /b %errorlevel%
 
+REM Build the tar 'filesystem'
+tar -c -f disk.tar --format ustar -C disk *.txt
+if %errorlevel% neq 0 exit /b %errorlevel%
+
 REM Build the kernel
 %CC% %CFLAGS% -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf kernel.c common.c shell.bin.o
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 %QEMU% -machine virt -bios default -nographic -serial mon:stdio --no-reboot ^
        -d unimp,guest_errors,int,cpu_reset -D qemu.log ^
-       -drive id=drive0,file=jabberwocky.txt,format=raw,if=none ^
+       -drive id=drive0,file=disk.tar,format=raw,if=none ^
        -device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 ^
 	   -kernel kernel.elf

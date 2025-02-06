@@ -14,6 +14,10 @@ After doing this, then I can write the page NUMBER not physical address to the
 QueuePFN register, and PAGE_SIZE to the QueueAlign register and the virtio-blk
 device works as expected.
 
+As mentioned by Seiya, the FAT filesystem would be interesting to implement
+instead of the tar format used in his book
+https://en.wikipedia.org/wiki/Design_of_the_FAT_file_system
+
 2025-02-04
 --------------------------------------------------------------------------------
 Virtio spec for virtqueues: https://docs.oasis-open.org/virtio/virtio/v1.1/csprd01/virtio-v1.1-csprd01.html#x1-230005
