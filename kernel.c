@@ -2,7 +2,7 @@
 
 #define PROCS_MAX 8
 
-#define FILE_SIZE_MAX  KILOBYTES(32)
+#define FILE_SIZE_MAX  KILOBYTES(3)
 #define FILES_MAX      32
 #define SECTOR_SIZE    512
 #define DISK_SIZE      align_up(FILES_MAX * sizeof(File), SECTOR_SIZE)
@@ -169,8 +169,8 @@ struct TarHeader {
 typedef struct {
 	bool in_use;
 	U32 size;
-	U8 *data;
 	char name[100];
+	U8 data[FILE_SIZE_MAX];
 } File;
 
 typedef struct {
@@ -386,8 +386,8 @@ bool virtq_is_busy(Virtq *vq) {
 
 void virtio_blk_read_write_sector(void *buf, U64 sector, bool is_write) {
 	if (sector >= virtio_blk_num_sectors) {
-		printf("virtio: tried to %s sector %x, but virtio-blk device only contains %x sectors\n",
-				is_write ? "write" : "read", sector, virtio_blk_num_sectors);
+		printf("virtio: tried to %s sector %d, but virtio-blk device only contains %d sectors\n",
+				is_write ? "write" : "read", (U32)sector, (U32)virtio_blk_num_sectors);
 		return;
 	}
 
@@ -445,9 +445,14 @@ U32 u32_from_octal(char *oct, int len) {
 }
 
 void filesystem_init(void) {
-	// read entire disk into memory	
 	U64 disk_sectors = DISK_SIZE / SECTOR_SIZE;
-	for (U64 sector=0; sector < disk_sectors; ++sector) {
+	if (disk_sectors < virtio_blk_num_sectors) {
+		PANIC("disk only has space for %d sectors, but virtio-blk device contains %d sectors", 
+			disk_sectors, virtio_blk_num_sectors);
+	}
+
+	// read entire disk into memory	
+	for (U64 sector=0; sector < virtio_blk_num_sectors; ++sector) {
 		virtio_blk_read_sector(disk + sector * SECTOR_SIZE, sector);
 	}
 	
@@ -469,8 +474,9 @@ void filesystem_init(void) {
 		// TODO(shaw): implement strcpy
 		// strcpy(file->name, header->name);
 		file->size = u32_from_octal(header->size, sizeof(header->size));
-		file->data = (U8*)header->data;
-		printf("file: %s, size=%d\n\n%s\n\n", file->name, file->size, file->data);
+		// file->data = (U8*)header->data;
+		memcpy(file->data, header->data, file->size);
+		printf("file: %s, size=%d\n", file->name, file->size);
 
 		p += align_up(sizeof(TarHeader) + file->size, SECTOR_SIZE);
 	}
