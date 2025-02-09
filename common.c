@@ -94,7 +94,9 @@ void printf(char *fmt, ...) {
 				}
 
 				int divisor = 1;
-				while (val / (divisor*10)) divisor *= 10;
+				while ((divisor < 1000000000) && (val / (divisor*10))) {
+					divisor *= 10;
+				}
 				
 				while (divisor > 0) {
 					int digit = val / divisor;
@@ -103,6 +105,20 @@ void printf(char *fmt, ...) {
 					divisor /= 10;
 				}
 
+				break;
+			}
+			case 'u': {
+				U32 val = va_arg(args, U32);
+				U32 divisor = 1;
+				while ((divisor < 1000000000) && (val / (divisor*10))) {
+					divisor *= 10;
+				}
+				while (divisor > 0) {
+					U32 digit = val / divisor;
+					putchar(digit + '0');
+					val %= divisor;
+					divisor /= 10;
+				}
 				break;
 			}
 			case 'x': {

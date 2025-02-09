@@ -3,7 +3,7 @@ TODO:
     currently just using a single sector
     - this will also require managing the memory for all the requests
 
-[ ] %u format specifier in printf
+[X] %u format specifier in printf
 
 [X] backspace in shell
 
