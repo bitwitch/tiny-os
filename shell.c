@@ -31,11 +31,19 @@ void main(void) {
 		int i;
 		for (i=0; i < MAX_CMDLINE; ++i) {
 			int c = getchar();
-			// TODO(shaw): handle backspace
-			// if (c == BACKSPACE) {
-				// i -= 2;
-				// continue;
-			// }
+			if (c == BACKSPACE) {
+				if (i > 0) {
+					putchar('\b');
+					putchar(0);
+					putchar('\b');
+
+					cmdline[i-1] = 0;
+					i -= 2;
+				} else {
+					i = -1;
+				}
+				continue;
+			}
 			if (c == '\r') {
 				putchar('\n');
 				break;

@@ -5,6 +5,12 @@ TODO:
 
 [ ] %u format specifier in printf
 
+[X] backspace in shell
+
+[ ] writefile syscall
+
+
+
 2025-02-05
 --------------------------------------------------------------------------------
 I figured out the issues from yesterday regarding initializing virtqueue's.
@@ -24,7 +30,7 @@ Virtio spec for virtqueues: https://docs.oasis-open.org/virtio/virtio/v1.1/csprd
 
 The virtio spec for virtqueue initializations says step 6 is to write the
 alignment of the used queue to the QueueAlign register and that this must be a
-power of 2. However, Nuta writes 0. According to the spec this is incorrect.
+power of 2. However, Seiya writes 0. According to the spec this is incorrect.
 
 From the spec:
 Writing to this register notifies the device about alignment boundary of the
