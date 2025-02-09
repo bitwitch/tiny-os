@@ -22,6 +22,10 @@ int getchar(void) {
 	return syscall(SYSCALL_GETCHAR, 0, 0, 0);
 }
 
+U32 readfile(char *filename, U8 *buf, U32 buf_len) {
+	return (U32)syscall(SYSCALL_READFILE, (int)filename, (int)buf, (int)buf_len);
+}
+
 __attribute__((noreturn)) 
 void exit(int code) {
 	syscall(SYSCALL_EXIT, code, 0, 0);

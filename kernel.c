@@ -5,7 +5,7 @@
 #define FILE_SIZE_MAX  KILOBYTES(3)
 #define FILES_MAX      32
 #define SECTOR_SIZE    512
-#define DISK_SIZE      align_up(FILES_MAX * sizeof(File), SECTOR_SIZE)
+#define DISK_SIZE_MAX  align_up(MEGABYTES(2), SECTOR_SIZE)
 
 // SATP register (supervisor address translation and protection)
 // |  31  |     30 - 22   |                 21 - 0                      |
@@ -15,6 +15,7 @@
 // SPIE is bit 5 in the sstatus csr, it indicates whether supervisor interrupts
 // were enabled prior to trapping into supervisor mode
 #define SSTATUS_SPIE (1 << 5)
+#define SSTATUS_SUM  (1 << 18)
 
 // |   31 - 10   |       9 - 8      | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
 // | Page number | for software use | D | A | G | U | X | W | R | V |
@@ -147,11 +148,11 @@ struct VirtioBlkRequest {
 typedef struct TarHeader TarHeader;
 struct TarHeader {
 	char name[100];
-	char mode[8];
-	char uid[8];
-	char gid[8];
-	char size[12];
-	char mtime[12];
+	char mode[8];       // octal string
+	char uid[8];        // octal string
+	char gid[8];        // octal string
+	char size[12];      // octal string
+	char mtime[12];     // octal string
 	char checksum[8];
 	char type;
 	char linkname[100];
@@ -163,14 +164,15 @@ struct TarHeader {
 	char devminor[8];
 	char prefix[155];
 	char padding[12];
-	char data[];     // Array pointing to the data area following the header
+	char data[];
 } __attribute__((packed));
 
 typedef struct {
+	bool is_loaded;
 	bool in_use;
 	U32 size;
+	U8 *data;
 	char name[100];
-	U8 data[FILE_SIZE_MAX];
 } File;
 
 typedef struct {
@@ -269,7 +271,7 @@ static U64 virtio_blk_num_sectors;
 
 static File files[FILES_MAX];
 static U32 num_files;
-static U8 disk[DISK_SIZE];
+static U8* disk;
 
 Paddr alloc_pages(U32 n);
 
@@ -444,20 +446,47 @@ U32 u32_from_octal(char *oct, int len) {
 	return dec;
 }
 
-void filesystem_init(void) {
-	U64 disk_sectors = DISK_SIZE / SECTOR_SIZE;
-	if (disk_sectors < virtio_blk_num_sectors) {
-		PANIC("disk only has space for %d sectors, but virtio-blk device contains %d sectors", 
-			disk_sectors, virtio_blk_num_sectors);
+U32 pow_u32(U32 base, U32 power) {
+	U32 result = 1;
+	for (U32 i=0; i<power; ++i) {
+		result *= base;
 	}
+	return result;
+}
+
+void octal_from_u32(U32 u32, char *oct, int len) {
+	int power;
+	for (power = 0; (u32/pow_u32(8, power+1)) > 0; ++power);
+	if (power > len - 1) {
+		PANIC("octal_from_32: u32=%x will not fit in octal string with length %d", u32, len);
+	}
+
+	memset(oct, '0', len);
+	for (; power >= 0; --power) {
+		int i = len - 1 - power - 1;
+		U32 divisor = pow_u32(8, power);
+		oct[i] = (char)(u32 / divisor + '0');
+		u32 %= divisor;
+	}
+	oct[len-1] = 0;
+}
+
+
+void filesystem_init(void) {
+	U32 device_size = virtio_blk_num_sectors * SECTOR_SIZE;
+	if (device_size > DISK_SIZE_MAX) {
+		PANIC("disk max size is %d, but virto-blk device size is %d", DISK_SIZE_MAX, device_size);
+	}
+	U32 num_pages = align_up(device_size, PAGE_SIZE) / PAGE_SIZE;
+	disk = (U8*)alloc_pages(num_pages);
 
 	// read entire disk into memory	
 	for (U64 sector=0; sector < virtio_blk_num_sectors; ++sector) {
 		virtio_blk_read_sector(disk + sector * SECTOR_SIZE, sector);
 	}
-	
+
 	// parse disk memory into files
-	for (U8 *p = disk; p < disk + DISK_SIZE; ) {
+	for (U8 *p = disk; p < disk + device_size; ) {
 		TarHeader *header = (TarHeader*)p;
 
 		if (header->name[0] == '\0') break;
@@ -470,15 +499,57 @@ void filesystem_init(void) {
 		File *file = &files[num_files++];
 
 		file->in_use = true;
-		memcpy(file->name, header->name, 100);
-		// TODO(shaw): implement strcpy
-		// strcpy(file->name, header->name);
+		strcpy(file->name, header->name);
 		file->size = u32_from_octal(header->size, sizeof(header->size));
-		// file->data = (U8*)header->data;
-		memcpy(file->data, header->data, file->size);
+		file->data = (U8*)header->data;
 		printf("file: %s, size=%d\n", file->name, file->size);
 
 		p += align_up(sizeof(TarHeader) + file->size, SECTOR_SIZE);
+	}
+}
+
+void filesystem_flush(void) {
+	// write all files into tar format in "disk"
+	U32 off = 0;
+	U8 *disk_end = disk;
+	for (int i=0; i<FILES_MAX; ++i) {
+		File *f = &files[i];
+		if (f->in_use) {
+			TarHeader h = {0};
+			strcpy(h.name, f->name);
+			strcpy(h.mode, "000644");
+			octal_from_u32(f->size, h.size, sizeof(h.size));
+
+			h.type = '0';
+			strcpy(h.magic, "ustar");
+			strcpy(h.version, "00");
+
+			// calculate checksum
+			U32 checksum = 0;
+			for (U32 i=0; i < sizeof(h); ++i) {
+				checksum += *((U8*)(&h + i));
+			}
+			// with the eight checksum bytes taken to be ASCII spaces (decimal value 32)
+			checksum += 8 * 32;
+			octal_from_u32(checksum, h.checksum, 7);
+			h.checksum[7] = ' ';
+
+			disk_end = disk + off + offsetof(TarHeader, data) + f->size;
+			if ((U32)(disk_end - disk) > DISK_SIZE_MAX) {
+				PANIC("not enough space in disk, max disk size is %d", (int)DISK_SIZE_MAX);
+			}
+
+			memcpy(disk + off, &h, sizeof(h));
+			memcpy(disk + off + offsetof(TarHeader, data), f->data, f->size);
+
+			off = (U32)(disk_end - disk);
+		}
+	}
+
+	// write in memory disk out to virtio-blk device
+	U64 num_sectors = align_up((U32)(disk_end - disk), SECTOR_SIZE) / SECTOR_SIZE;
+	for (U64 sector=0; sector < num_sectors; ++sector) {
+		virtio_blk_write_sector(disk + sector * SECTOR_SIZE, sector);
 	}
 }
 
@@ -700,6 +771,7 @@ void yield(void) {
 
 // a3 -> syscall_num
 // a0, a1, a2 -> arguments
+// put return value in a0
 void handle_syscall(TrapFrame *f) {
 	switch (f->a3) {
 		case SYSCALL_PUTCHAR:
@@ -721,6 +793,42 @@ void handle_syscall(TrapFrame *f) {
 			PANIC("unreachable");
 			break;
 		}
+		case SYSCALL_READFILE: {
+			char *filename = (char*)f->a0;
+			U8 *buf = (U8*)f->a1;
+			U32 buf_len = (U32)f->a2;
+
+			f->a0 = 0; // default to zero bytes read
+					
+			U32 status_reg = READ_CSR(sstatus);
+			WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
+
+			// find file by name
+			File *file = NULL;
+			for (int i=0; i<FILES_MAX; ++i) {
+				if (0 == strcmp(filename, files[i].name)) {
+					file = &files[i];
+					break;
+				}
+			}
+
+			if (file && file->in_use) {
+				if (buf_len < file->size) {
+					printf("buffer %x with len %d not big enough for file %s with size %d\n", 
+						(U32)buf, (int)buf_len, file->name, (int)file->size);
+				} else {
+					memcpy(buf, file->data, file->size);
+					f->a0 = file->size;
+				}
+			} else {
+				printf("file not found: %s\n", filename);
+			}
+
+			WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
+
+			break;
+		}
+
 		default:
 			PANIC("unimplemented syscall: %u\n", f->a3);
 			break;

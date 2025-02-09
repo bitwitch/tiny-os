@@ -13,6 +13,7 @@
 #define NULL  ((void *) 0)
 
 #define KILOBYTES(n) (n * 1024)
+#define MEGABYTES(n) (n * 1024 * 1024)
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
@@ -25,10 +26,11 @@ typedef U32 Paddr;                 // physical address
 typedef U32 Vaddr;                 // virtual address
 
 enum {
-	SYSCALL_INVALID = 0, 
-	SYSCALL_PUTCHAR = 1,
-	SYSCALL_GETCHAR = 2,
-	SYSCALL_EXIT    = 3,
+	SYSCALL_INVALID  = 0, 
+	SYSCALL_PUTCHAR  = 1,
+	SYSCALL_GETCHAR  = 2,
+	SYSCALL_EXIT     = 3,
+	SYSCALL_READFILE = 4,
 };
 
 void *memset(void *buf, U8 val, U32 count);
@@ -36,7 +38,10 @@ void *memcpy(void *dest, void *src, U32 count);
 void *memmove(void *dest,  void *src, U32 count);
 int memcmp(void *lhs, void *rhs, U32 count);
 int strcmp(char *str1, char *str2);
+U32 strlen(char *s);
+char *strcpy(char *dest, char *src);
 void printf(char *fmt, ...);
 void putchar(char c);
 int getchar(void);
+bool isspace(int c);
 void exit(int code);

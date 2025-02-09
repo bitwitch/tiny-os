@@ -36,7 +36,7 @@ void *memmove(void *dest,  void *src, U32 count) {
 }
 
 int memcmp(void *lhs, void *rhs, U32 count) {
-	for (U32 i=0; i<=count; ++i) {
+	for (U32 i=0; i<count; ++i) {
 		U8 l = ((U8*)lhs)[i];
 		U8 r = ((U8*)rhs)[i];
 		if (l < r) return -1;
@@ -55,6 +55,25 @@ int strcmp(char *str1, char *str2) {
 	if (*str1 == 0 && *str2 != 0) return -1;
 	if (*str1 != 0 && *str2 == 0) return 1;
 	return 0;
+}
+
+U32 strlen(char *s) {
+	int i = 0;
+	for (; s[i] != 0; ++i);
+	return i;
+}
+
+char *strcpy(char *dest, char *src) {
+	int i;
+	for (i=0; src[i] != 0; ++i) {
+		dest[i]	= src[i];
+	}
+	dest[i]	= 0;
+	return dest;
+}
+
+bool isspace(int c) {
+	return c == ' ' || (unsigned)c-'\t' < 5;
 }
 
 void printf(char *fmt, ...) {
