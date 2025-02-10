@@ -18,7 +18,23 @@ void evaluate(char *cmdline) {
 		if (bytes_read > 0) {
 			printf("%s\n", buf);
 		}
+	} else if (0 == memcmp(cmdline, "writefile ", strlen("writefile "))) {
+		char *filename = cmdline + strlen("writefile ");
+		while (isspace(*filename)) ++filename;
 
+		char *data = filename;
+		while (!isspace(*data)) ++data;
+		*data++ = 0; // null terminate filename
+		while (isspace(*data))  ++data;
+
+		U32 data_len = strlen(data);
+		U32 bytes_written = writefile(filename, (U8*)data, data_len);
+		if (bytes_written == data_len) {
+			printf("successfully wrote %s\n", filename);
+		} else {
+			printf("error: writefile: tried to write %u bytes to %s, only %u were written\n", 
+				data_len, filename, bytes_written);
+		}
 	} else {
 		printf("unknown command: %s\n", cmdline);
 	}

@@ -26,11 +26,12 @@ typedef U32 Paddr;                 // physical address
 typedef U32 Vaddr;                 // virtual address
 
 enum {
-	SYSCALL_INVALID  = 0, 
-	SYSCALL_PUTCHAR  = 1,
-	SYSCALL_GETCHAR  = 2,
-	SYSCALL_EXIT     = 3,
-	SYSCALL_READFILE = 4,
+	SYSCALL_INVALID   = 0, 
+	SYSCALL_PUTCHAR   = 1,
+	SYSCALL_GETCHAR   = 2,
+	SYSCALL_EXIT      = 3,
+	SYSCALL_READFILE  = 4,
+	SYSCALL_WRITEFILE = 5,
 };
 
 void *memset(void *buf, U8 val, U32 count);

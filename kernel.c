@@ -168,7 +168,7 @@ struct TarHeader {
 } __attribute__((packed));
 
 typedef struct {
-	bool is_loaded;
+	// bool is_loaded;
 	bool in_use;
 	U32 size;
 	U8 *data;
@@ -337,11 +337,11 @@ void virtio_blk_init(void) {
 
 	U32 virtio_version = virtio_reg_read32(VIRTIO_REG_VERSION);
 	if (virtio_version != 1)
-		PANIC("virtio: invalid version: %x", virtio_version);
+		PANIC("virtio: invalid version: %u", virtio_version);
 
 	U32 device_id = virtio_reg_read32(VIRTIO_REG_DEVICE_ID);
 	if (device_id != VIRTIO_DEVICE_BLK)
-		PANIC("virtio: invalid device id: %x", device_id);
+		PANIC("virtio: invalid device id: %u", device_id);
 
 	virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, 0); // reset the device
 	virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACK);
@@ -458,7 +458,7 @@ void octal_from_u32(U32 u32, char *oct, int len) {
 	int power;
 	for (power = 0; (u32/pow_u32(8, power+1)) > 0; ++power);
 	if (power > len - 1) {
-		PANIC("octal_from_32: u32=%x will not fit in octal string with length %d", u32, len);
+		PANIC("octal_from_32: u32=%u will not fit in octal string with length %d", u32, len);
 	}
 
 	memset(oct, '0', len);
@@ -534,7 +534,8 @@ void filesystem_flush(void) {
 			octal_from_u32(checksum, h.checksum, 7);
 			h.checksum[7] = ' ';
 
-			disk_end = disk + off + offsetof(TarHeader, data) + f->size;
+			U32 file_size_aligned = align_up(f->size, SECTOR_SIZE);
+			disk_end = disk + off + offsetof(TarHeader, data) + file_size_aligned;
 			if ((U32)(disk_end - disk) > DISK_SIZE_MAX) {
 				PANIC("not enough space in disk, max disk size is %d", (int)DISK_SIZE_MAX);
 			}
@@ -542,14 +543,25 @@ void filesystem_flush(void) {
 			memcpy(disk + off, &h, sizeof(h));
 			memcpy(disk + off + offsetof(TarHeader, data), f->data, f->size);
 
+			U8 *start_zeros = disk + off + offsetof(TarHeader, data) + f->size;
+			U32 zeros_size = (U32)(disk_end - start_zeros);
+			memset(start_zeros, 0, zeros_size);
+
 			off = (U32)(disk_end - disk);
 		}
 	}
 
 	// write in memory disk out to virtio-blk device
 	U64 num_sectors = align_up((U32)(disk_end - disk), SECTOR_SIZE) / SECTOR_SIZE;
-	for (U64 sector=0; sector < num_sectors; ++sector) {
+	U64 sector = 0;
+	for (sector=0; sector < num_sectors; ++sector) {
 		virtio_blk_write_sector(disk + sector * SECTOR_SIZE, sector);
+	}
+
+	// fill the rest with 0s
+	U8 zero_sector[SECTOR_SIZE] = {0};
+	for (; sector < virtio_blk_num_sectors; ++sector) {
+		virtio_blk_write_sector(zero_sector, sector);
 	}
 }
 
@@ -814,11 +826,48 @@ void handle_syscall(TrapFrame *f) {
 
 			if (file && file->in_use) {
 				if (buf_len < file->size) {
-					printf("buffer %x with len %d not big enough for file %s with size %d\n", 
-						(U32)buf, (int)buf_len, file->name, (int)file->size);
+					printf("error: readfile: buffer %x with len %u not big enough for file %s with size %u\n", 
+						(U32)buf, buf_len, file->name, file->size);
 				} else {
 					memcpy(buf, file->data, file->size);
 					f->a0 = file->size;
+				}
+			} else {
+				printf("file not found: %s\n", filename);
+			}
+
+			WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
+
+			break;
+		}
+
+		case SYSCALL_WRITEFILE: {
+			char *filename = (char*)f->a0;
+			U8 *buf = (U8*)f->a1;
+			U32 buf_len = (U32)f->a2;
+
+			f->a0 = 0; // default to zero bytes written
+					
+			U32 status_reg = READ_CSR(sstatus);
+			WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
+
+			// find file by name
+			File *file = NULL;
+			for (int i=0; i<FILES_MAX; ++i) {
+				if (0 == strcmp(filename, files[i].name)) {
+					file = &files[i];
+					break;
+				}
+			}
+
+			if (file && file->in_use) {
+				if (buf_len > file->size) {
+					printf("error: writefile: file %s has size %u, but tried to write buffer %x with len %u\n",
+						file->name, file->size, (U32)buf, buf_len);
+				} else {
+					file->size = buf_len;
+					memcpy(file->data, buf, buf_len);
+					f->a0 = buf_len;
 				}
 			} else {
 				printf("file not found: %s\n", filename);
@@ -960,6 +1009,8 @@ void kernel_main(void) {
 	putchar('\n');
 
 	yield();
+
+	filesystem_flush();
 	PANIC("switched to idle process");
 }
 

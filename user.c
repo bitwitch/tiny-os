@@ -26,6 +26,10 @@ U32 readfile(char *filename, U8 *buf, U32 buf_len) {
 	return (U32)syscall(SYSCALL_READFILE, (int)filename, (int)buf, (int)buf_len);
 }
 
+U32 writefile(char *filename, U8 *buf, U32 buf_len) {
+	return (U32)syscall(SYSCALL_WRITEFILE, (int)filename, (int)buf, (int)buf_len);
+}
+
 __attribute__((noreturn)) 
 void exit(int code) {
 	syscall(SYSCALL_EXIT, code, 0, 0);
