@@ -18,21 +18,17 @@ void *memcpy(void *dest, void *src, U32 count) {
 }
 
 void *memmove(void *dest,  void *src, U32 count) {
-#define COPY_BUF_SIZE KILOBYTES(4u)
-	if (count > COPY_BUF_SIZE) {
-		printf("this temporary implementation of memmove only handles %x bytes, but %x were requested\n", 
-			COPY_BUF_SIZE, count);
-		exit(1);
-	} 
-
-	U8 src_copy[COPY_BUF_SIZE];
-	memcpy(src_copy, src, count);
-	U8 *dest_u8 = (U8*)dest;
-	for (U32 i=0; i<count; ++i) {
-		dest_u8[i] = src_copy[i];
+	char *d = dest;
+	char *s = src;
+	U32 n = count;
+	if (d < s) {
+		for (; n; n--) *d++ = *s++;
+	} else if (d > s) { 
+		while (n) n--, d[n] = s[n];
+	} else {
+		// do nothing if if src == dest
 	}
 	return dest;
-#undef COPY_BUF_SIZE 
 }
 
 int memcmp(void *lhs, void *rhs, U32 count) {
