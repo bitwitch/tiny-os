@@ -3,14 +3,110 @@ TODO:
     currently just using a single sector
     - this will also require managing the memory for all the requests
 
+[ ] exec system call?
 
+[ ] have reads from disk use interrupts to notify when read is complete rather
+    than spinning 
 
+[ ] system timer
+	[ ] implement scheduling based on timer interrupts
+  - look into the OpenSBI spec for timer stuff
 
+[ ] system call to get diagnostics: how much memory free, number of procs
+    running, etc.
 
+[X] rewrite memmove in non stupid way
+	[X] remove exit() in kernel
 [X] %u format specifier in printf
 [X] backspace in shell
 [X] writefile syscall
 
+Some important sections are marked with #-, (i.e. #- Section Title),
+this is done so you can use your text editor easily search for them.
+
+2025-02-19
+--------------------------------------------------------------------------------
+#- Explanation of full boot process 
+1. Once the virtual machine is powered on (starting qemu), it fills memory at
+	 0x1000 with the first instructions to jump to and sets the program counter to
+   0x1000.
+2. These instructions are the Zero Stage Bootloader (ZSBL) which: 
+	 - sets up a0 and a1 registers: a0 -> something to do with harts, a1 -> points
+	   to a device tree struct (both irrelevant to me for this os)
+	 - writes a pointer to a fw_dynamic_info struct into register a2, this struct
+	   contains the next address for OpenSBI to jump to after it completes and the
+		 next mode for the cpu to enter at this point, qemu must have populated this
+		 struct with the address 0x80200000 and next mode S (Supervisor) during power up
+   - jumps to address 0x80000000
+3. 0x80000000 is where the first user-provided instructions CAN be. The -bios
+   flag passed to qemu is used to tell the vm what to load at address 0x80000000
+4. I am currently using -bios default which on the riscv32 virt machine loads
+   OpenSBI at address 0x80000000
+5. OpenSBI provides an interrupt-based interface to the kernel, I am assuming
+   that all this code lives between 0x80000000 and 0x80200000
+6. OpenSBI transfers the cpu into S mode and jumps to 0x80200000 (the address
+   set up by ZSBL)
+7. 0x80200000 is where my kernel is loaded (by specifying -kernel kernel.elf in
+   the command line to run qemu). The kernel does the following initialization:
+	 1. writes the address of the stack into the sp register
+   2. zeros the bss section
+   3. writes the address of the kernel's trap handler to the stvec register
+   4. initializes the virtio-blk device
+   5. initializes the filesystem
+
+for more info see:
+https://web.archive.org/web/20240225130852/https://popovicu.com/posts/risc-v-sbi-and-full-boot-process/
+
+#- Explanation of all qemu flags used in the command line:
+%QEMU% -machine virt -bios default -nographic -serial mon:stdio --no-reboot ^
+       -d unimp,guest_errors,int,cpu_reset -D qemu.log ^
+       -drive id=drive0,file=disk.tar,format=raw,if=none ^
+       -device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0 ^
+       -kernel kernel.elf
+
+-machine virt 
+use RISC-V VirtIO board
+https://www.qemu.org/docs/master/system/riscv/virt.html
+
+-bios default 
+load the default OpenSBI firmware (included with the QEMU release) 
+all a user needs to do is specify the kernel they want to boot with the -kernel option
+
+-nographic
+disable graphical output so that QEMU is a simple command line application
+this also multiplexes the console and the monitor to stdio
+
+-serial mon:stdio 
+redirect the virtual serial port to the host character device
+"mon:stdio" creates a multiplexed stdio backend connected to the serial port and the QEMU monitor
+
+--no-reboot
+exit instead of rebooting
+
+-d unimp,guest_errors,int,cpu_reset -D qemu.log
+-d enables logging of specified items, -D specifies the file to output the log
+
+-drive id=drive0,file=disk.tar,format=raw,if=none
+specifies the file disk.tar to be loaded in drive0 in raw format
+-drive combines the device and backend(blockdev) into a single command line option
+
+-device virtio-blk-device,drive=drive0,bus=virtio-mmio-bus.0
+add the device driver "virtio-blk-device"
+specifies drive0 as the block device to use as backend
+specifies the device is attached to virtio-mmio-bus.0 (if there are multiple
+instances of MMIO buses they are indexed .0, .1, etc)
+
+-kernel kernel.elf
+use kernel.elf as kernel image (the kernel can either be a Linux kernel or in
+multiboot format)
+
+
+2025-02-12
+--------------------------------------------------------------------------------
+fork and exec? or some other way to spawn processes?
+
+Essence Filesystem Blog Post
+https://essence.handmade.network/blog/p/3067-the_filesystem%252C_version_1#14900
 
 
 2025-02-05

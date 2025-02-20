@@ -599,10 +599,6 @@ int getchar(void) {
 	return (int)ret.error;
 }
 
-void exit(int code) {
-	PANIC("exit called in kernel space with code %d", code);
-}
-
 Paddr alloc_pages(U32 n) {
 	U32 size = n * PAGE_SIZE;
 	if (free_ram_cursor + size > (U32)__free_ram_end) {

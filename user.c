@@ -33,7 +33,9 @@ U32 writefile(char *filename, U8 *buf, U32 buf_len) {
 __attribute__((noreturn)) 
 void exit(int code) {
 	syscall(SYSCALL_EXIT, code, 0, 0);
-	printf("well shit....\n");
+	//
+	// TODO: release resources such as memory and open files
+	// 
 	for (;;){} // so compiler doesnt warn about noreturn 
 }
 

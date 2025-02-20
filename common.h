@@ -45,4 +45,3 @@ void printf(char *fmt, ...);
 void putchar(char c);
 int getchar(void);
 bool isspace(int c);
-void exit(int code);
