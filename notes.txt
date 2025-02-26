@@ -1,19 +1,40 @@
+
+
+
 TODO:
-[ ] VirtioBlkRequest needs to support multiple sectors: i.e. data[][512],
-    currently just using a single sector
-    - this will also require managing the memory for all the requests
+[ ] Go over full boot process
 
-[ ] exec system call?
+[ ] dont read whole disk into memory, instead just metadata and then 
 
-[ ] have reads from disk use interrupts to notify when read is complete rather
-    than spinning 
+
+
+
+
+
+[ ] implement an actual filesystem, maybe start with vsfs from OSTEP
+	[ ] create a filesystem image in vsfs format
+	[ ] read the metadata into data structures
+
+[ ] notion of current directory, and shell commands for navigating filesystem
+
+[ ] actual commandline parsing
 
 [ ] system timer
 	[ ] implement scheduling based on timer interrupts
   - look into the OpenSBI spec for timer stuff
 
+[ ] have reads from disk use interrupts to notify when read is complete rather
+    than spinning 
+
 [ ] system call to get diagnostics: how much memory free, number of procs
     running, etc.
+
+[ ] exec system call?
+
+[ ] VirtioBlkRequest needs to support multiple sectors: i.e. data[][512],
+    currently just using a single sector
+    - this will also require managing the memory for all the requests
+
 
 [X] rewrite memmove in non stupid way
 	[X] remove exit() in kernel
@@ -21,15 +42,134 @@ TODO:
 [X] backspace in shell
 [X] writefile syscall
 
+
+
+
 Some important sections are marked with #-, (i.e. #- Section Title),
 this is done so you can use your text editor easily search for them.
+
+
+2025-02-26
+--------------------------------------------------------------------------------
+
+my implementation of vsfs:
+
+block size:          4KB
+inode on disk:       64 bytes each
+max inodes:          4096
+bitmap size:         4KB (one block)
+inode table size:    256KB (64 blocks)
+data region size:    4MB (1024 block)
+   __________________________________________________________________________
+  |       |        |        |           |                                    |
+  | super | inode  |  data  |   inode   |                data                |
+  | block | bitmap | bitmap |   table   |               region               |
+  |_______|________|________|___________|____________________________________|
+ 0KB     4KB      8KB     12KB        268KB                               4364KB
+
+Need to create a program to write a disk image in this format. It could take a
+directory path as input and write all the files and subdirectories to a disk.img
+file.
+
+Then in the kernel to initialize the filesystem, read file metadata into memory. 
+
+
+Questions:
+- how does writing to disk work on qemu? you can pass a disk image in as a file,
+  does writing to disk directly affect this file?
+
+
+
+2025-02-25
+--------------------------------------------------------------------------------
+https://en.wikipedia.org/wiki/Design_of_the_FAT_file_system
+
+FAT32 Filesystem
+[ boot sector | info sector | reserved | file alloc table | data ]
+
+
+
+2025-02-23
+--------------------------------------------------------------------------------
+reading the "Persistence" part of OSTEP:
+Q: How should the OS manage a persistent device? What are the APIs?
+What are the important aspects of the implementation?
+
+A: essentially virtualize it as a filesystem and offer an interface to it.
+api: open, close, read, write
+one very important aspect is that disk reads and writes are slow, so the os
+should employ technique to mitigate that (interrupts, DMA)
+
+in xv6, each process has an array of open files, indexed by file descriptor:
+struct proc {
+	struct file *ofile[NOFILE]; // Open files
+};
+
+struct file {
+	int ref;
+	char readable;
+	char writable;
+	struct inode *ip;
+	uint off;
+};
+
+struct inode {
+  uint dev;           // Device number
+  uint inum;          // Inode number
+  int ref;            // Reference count
+  struct sleeplock lock; // protects everything below here
+  int valid;          // inode has been read from disk?
+
+  short type;         // copy of disk inode
+  short major;
+  short minor;
+  short nlink;
+  uint size;
+  uint addrs[NDIRECT+1];
+};
+
+struct superblock {
+  uint magic;        // Must be FSMAGIC
+  uint size;         // Size of file system image (blocks)
+  uint nblocks;      // Number of data blocks
+  uint ninodes;      // Number of inodes.
+  uint nlog;         // Number of log blocks
+  uint logstart;     // Block number of first log block
+  uint inodestart;   // Block number of first inode block
+  uint bmapstart;    // Block number of first free map block
+};
+
+Q: How can we build a simple file system? What structures are needed on the disk? 
+What do they need to track? How are they accessed?
+
+A: well for vsfs used in the book the approach is:
+a super block, a bitmap for used inodes, a bitmap for used data blocks, an array
+of inodes, and an array of data blocks
+file metadata like type, size, location of data blocks, creation date, etc. are
+stored in the inode table. they are accessed by traversing the inode table, by
+following directories down a path like: "/one/two/three/file.txt"
+
+
+
+2025-02-22
+--------------------------------------------------------------------------------
+reading the "Persistence" part of OSTEP:
+Q: How should I/O be integrated into systems? What are the general mechanisms?
+   How can we make them efficient?
+
+A: connected to various busses. generally you can read data from the device like
+status and other general data and write data to the device like commands. use
+interrupts instead of spinning until ready for slow devices like disk. can also
+use (Direct Memory Access) DMA to free up the cpu from copying large chunks of
+data to a device.
+
 
 2025-02-19
 --------------------------------------------------------------------------------
 #- Explanation of full boot process 
 1. Once the virtual machine is powered on (starting qemu), it fills memory at
 	 0x1000 with the first instructions to jump to and sets the program counter to
-   0x1000.
+   0x1000. (The default reset vector in qemu is 0x1000)
 2. These instructions are the Zero Stage Bootloader (ZSBL) which: 
 	 - sets up a0 and a1 registers: a0 -> something to do with harts, a1 -> points
 	   to a device tree struct (both irrelevant to me for this os)

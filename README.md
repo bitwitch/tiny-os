@@ -19,3 +19,4 @@ Note: If you want to use qemu monitor for debugging stuff, then using cmd.exe as
 [tar file format](https://en.wikipedia.org/wiki/Tar_%28computing%29)  
 [xv6 source code](https://github.com/mit-pdos/xv6-riscv)  
 [full boot process](https://web.archive.org/web/20240225130852/https://popovicu.com/posts/risc-v-sbi-and-full-boot-process/)  
+[Operating Systems: Three Easy Pieces](https://pages.cs.wisc.edu/~remzi/OSTEP/)  

@@ -1,0 +1,5 @@
+[ ] wake up
+[ ] drink coffee
+[ ] program
+[ ] pet dog
+[ ] sleep

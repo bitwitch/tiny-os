@@ -15,7 +15,7 @@ if %errorlevel% neq 0 exit /b %errorlevel%
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 REM Build the tar 'filesystem'
-tar -c -f disk.tar --format ustar -C disk *.txt
+tar -c -f disk.tar --format ustar -C disk *
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 REM Build the kernel

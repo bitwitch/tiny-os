@@ -2,6 +2,7 @@
 
 #define PROCS_MAX 8
 
+#define PATH_MAX       100
 #define FILE_SIZE_MAX  KILOBYTES(3)
 #define FILES_MAX      32
 #define SECTOR_SIZE    512
@@ -168,11 +169,10 @@ struct TarHeader {
 } __attribute__((packed));
 
 typedef struct {
-	// bool is_loaded;
 	bool in_use;
 	U32 size;
 	U8 *data;
-	char name[100];
+	char name[PATH_MAX];
 } File;
 
 typedef struct {
@@ -502,7 +502,8 @@ void filesystem_init(void) {
 		strcpy(file->name, header->name);
 		file->size = u32_from_octal(header->size, sizeof(header->size));
 		file->data = (U8*)header->data;
-		printf("file: %s, size=%d\n", file->name, file->size);
+
+		printf("%s: %s, size=%d\n", header->type == '5' ? "dir " : "file", file->name, file->size);
 
 		p += align_up(sizeof(TarHeader) + file->size, SECTOR_SIZE);
 	}
