@@ -1,15 +1,5 @@
-
-
-
 TODO:
 [ ] Go over full boot process
-
-[ ] dont read whole disk into memory, instead just metadata and then 
-
-
-
-
-
 
 [ ] implement an actual filesystem, maybe start with vsfs from OSTEP
 	[ ] create a filesystem image in vsfs format
@@ -43,8 +33,6 @@ TODO:
 [X] writefile syscall
 
 
-
-
 Some important sections are marked with #-, (i.e. #- Section Title),
 this is done so you can use your text editor easily search for them.
 
@@ -52,20 +40,23 @@ this is done so you can use your text editor easily search for them.
 2025-02-26
 --------------------------------------------------------------------------------
 
-my implementation of vsfs:
+#- My implementation of vsfs:
 
 block size:          4KB
 inode on disk:       64 bytes each
 max inodes:          4096
 bitmap size:         4KB (one block)
 inode table size:    256KB (64 blocks)
-data region size:    4MB (1024 block)
-   __________________________________________________________________________
-  |       |        |        |           |                                    |
-  | super | inode  |  data  |   inode   |                data                |
-  | block | bitmap | bitmap |   table   |               region               |
-  |_______|________|________|___________|____________________________________|
- 0KB     4KB      8KB     12KB        268KB                               4364KB
+data region size:    16MB (4096 blocks)
+   __________________________________________________________________________________
+  |       |       |        |        |           |                                    |
+  | boot  | super | inode  |  data  |   inode   |                data                |
+  | block | block | bitmap | bitmap |   table   |               region               |
+  |_______|_______|________|________|___________|____________________________________|
+ 0KB     4KB     8KB      12KB     16KB        272KB                              16656KB
+
+boot block will be unused for now, but in the future could be used for a
+bootloader for booting on physical hardware.
 
 Need to create a program to write a disk image in this format. It could take a
 directory path as input and write all the files and subdirectories to a disk.img
@@ -126,17 +117,6 @@ struct inode {
   short nlink;
   uint size;
   uint addrs[NDIRECT+1];
-};
-
-struct superblock {
-  uint magic;        // Must be FSMAGIC
-  uint size;         // Size of file system image (blocks)
-  uint nblocks;      // Number of data blocks
-  uint ninodes;      // Number of inodes.
-  uint nlog;         // Number of log blocks
-  uint logstart;     // Block number of first log block
-  uint inodestart;   // Block number of first inode block
-  uint bmapstart;    // Block number of first free map block
 };
 
 Q: How can we build a simple file system? What structures are needed on the disk? 
