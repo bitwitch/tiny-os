@@ -6,3 +6,5 @@ tags
 qemu.log 
 opensbi-riscv32-generic-fw_dynamic.bin 
 disk.tar 
+disk.img
+build/
