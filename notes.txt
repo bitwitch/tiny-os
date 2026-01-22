@@ -39,6 +39,7 @@ this is done so you can use your text editor easily search for them.
 
 2025-02-26
 --------------------------------------------------------------------------------
+https://pages.cs.wisc.edu/~remzi/OSTEP/file-implementation.pdf
 
 #- My implementation of vsfs:
 

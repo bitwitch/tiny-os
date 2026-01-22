@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/stat.h>
 #include <io.h>
 
 #ifndef MAX_PATH
@@ -18,30 +19,68 @@
 #endif
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+#define KILOBYTES(n) (n * 1024)
+#define MEGABYTES(n) (n * 1024 * 1024)
+
 #define INODE_NUM_DIRECT_POINTERS  12
 #define ROOT_INODE_NUM             1    // zero is reserved for a non-existent file
 #define DIR_LINK_ENTRY_MIN         12
+#define BLOCK_SIZE                 KILOBYTES(4)
+#define SUPERBLOCK_START           KILOBYTES(4)
+#define INODE_BITMAP_START         KILOBYTES(8)
+#define DATA_BITMAP_START          KILOBYTES(12)
+#define INODE_TABLE_START          KILOBYTES(16)
+#define DATA_REGION_START          KILOBYTES(272)
+#define VSFS_MAGIC                 0x73667376
 
-#define KILOBYTES(n)        (n * 1024)
-#define MEGABYTES(n)        (n * 1024 * 1024)
-#define BLOCK_SIZE          KILOBYTES(4)
-#define SUPERBLOCK_START    KILOBYTES(4)
-#define INODE_BITMAP_START  KILOBYTES(8)
-#define DATA_BITMAP_START   KILOBYTES(12)
-#define INODE_TABLE_START   KILOBYTES(16)
-#define DATA_REGION_START   KILOBYTES(272)
-
-#define VSFS_MAGIC 0x73667376
-
-enum {
-	INODE_NONE,
-	INODE_DIR,
-	INODE_FILE,
-};
-
-
+typedef uint64_t U64;
 typedef uint32_t U32;
+typedef uint16_t U16;
 typedef uint8_t  U8;
+
+#if _WIN32
+U64 os_file_size(char *filepath) {
+	struct __stat64 stat = {0};
+	_stat64(filepath, &stat);
+	return stat.st_size;
+}
+#elif __APPLE__
+U64 os_file_size(char *filepath) {
+	struct stat s = {0};
+	stat(filepath, &s);
+	return s.st_size;
+}
+#else
+#error os_file_size not defined on this platform
+#endif
+
+bool read_entire_file(char *filepath, U8 **file_data, U64 *out_size) {
+	FILE *f = fopen(filepath, "rb");
+	if (!f) {
+		return false;
+	}
+
+	U64 file_size = os_file_size(filepath);
+
+	*out_size = file_size + 1;
+	*file_data = malloc(*out_size);
+	if (!*file_data) {
+		fclose(f);
+		return false;
+	}
+
+	U64 bytes_read = fread(*file_data, 1, file_size, f);
+	if (bytes_read < file_size && !feof(f)) {
+		fclose(f);
+		return false;
+	}
+
+	(*file_data)[bytes_read] = 0; // add null terminator
+	fclose(f);
+
+	return true;
+}
 
 // ---------------------------------------------------------------------------
 // stretchy buffer, a la sean barrett
@@ -62,6 +101,7 @@ typedef struct {
 #define BUF(x) x // annotates that x is a stretchy buffer
 #define buf_len(b)  ((b) ? (int)buf__header(b)->len : 0)
 #define buf_lenu(b) ((b) ?      buf__header(b)->len : 0)
+#define buf_size(b) ((b) ? buf_lenu(b) * sizeof((b)[0]) : 0)
 #define buf_set_len(b, l) buf__header(b)->len = (l)
 #define buf_cap(b) ((b) ? buf__header(b)->cap : 0)
 #define buf_end(b) ((b) + buf_lenu(b))
@@ -84,10 +124,19 @@ void *buf__grow(void *buf, size_t new_len, size_t elem_size) {
 	new_header->cap = new_cap;
 	return new_header->buf;
 }
+
 // ---------------------------------------------------------------------------
 
+enum {
+	INODE_NONE,
+	INODE_DIR,
+	INODE_FILE,
+};
+
+// must be 64 bytes
 typedef struct {
-	int type;
+	U8 type;
+	U8 num_addrs;
 	U32 size_in_bytes;
 	U32 addrs[INODE_NUM_DIRECT_POINTERS];
 } DiskInode;
@@ -104,16 +153,16 @@ typedef struct {
 
 typedef struct {
 	U32 inode_num;
-	U32 entry_size; // size of name plus any empty space, this is used so that new files can reuse old space
-	U32 name_size;  // including null-terminator
+	U16 entry_size; // size of name plus any empty space, this is used so that new files can reuse old space
+	U16 name_size;  // including null-terminator
 	char *name;
 } DirLink;
 
 typedef struct {
-	int inode_type;
+	U8 inode_type;
 	U32 inode_num;
-	char *path;             // for file
-	BUF(DirLink *dir_links); // for dir
+	char *path;              // the path where the file lives on the host system, not necessarily the same name that will be in the disk image
+	BUF(DirLink *dir_links); // for inode type dir only
 } DiskImgEntry;
 
 typedef struct {
@@ -204,6 +253,7 @@ U32 align_up(U32 val, U32 size) {
 	return remainder ? val + (size - remainder) : val;
 }
 
+// NOTE: these are global because resizing can change the pointer so passing them to functions can get hairy
 BUF(DiskInode *inodes) = NULL;
 BUF(DiskImgEntry *entries) = NULL;
 
@@ -220,7 +270,7 @@ BUF(DiskImgEntry *entries) = NULL;
 		// insert a new DiskImgEntry into entries
 	// insert new DirLink into DiskDir
 // insert a new DiskImgEntry into entries for this dir
-U32 traverse_dir(char *path, U32 parent_inode_num) {
+U32 traverse_dir(char *host_path, char *out_path_base, U32 parent_inode_num) {
 	U32 inode_num = buf_len(inodes);
 	buf_push(inodes, (DiskInode){.type = INODE_DIR});
 
@@ -242,89 +292,140 @@ U32 traverse_dir(char *path, U32 parent_inode_num) {
 	};
 	buf_push(dir_links, dot_dot);
 
-	BUF(DirEntry *dir_entries) = read_dir(path);
+	BUF(DirEntry *dir_entries) = read_dir(host_path);
 	for (int i=0; i<buf_len(dir_entries); ++i) {
 		DirEntry *entry = &dir_entries[i];
+
 		char tmp[MAX_PATH];
+		path_copy(tmp, out_path_base);
+		path_join(tmp, entry->name);
+		char *path = _strdup(tmp);
+
 		path_copy(tmp, entry->base);
 		path_join(tmp, entry->name);
-		char *sub_path = _strdup(tmp);
+		char *host_child_path = _strdup(tmp);
 
 		U32 child_inode_num;
 		if (entry->is_dir) {
-			child_inode_num = traverse_dir(sub_path, inode_num);
+			child_inode_num = traverse_dir(host_child_path, path, inode_num);
 		} else {
 			child_inode_num = buf_len(inodes);
-			buf_push(inodes, (DiskInode){.type = INODE_FILE});
+			assert(entry->size < BLOCK_SIZE * INODE_NUM_DIRECT_POINTERS);
+			buf_push(inodes, (DiskInode){.type = INODE_FILE, .size_in_bytes = (U32)entry->size});
 			DiskImgEntry die = {0};
 			die.inode_type = INODE_FILE;
 			die.inode_num = child_inode_num;
-			die.path = sub_path;
+			die.path = host_child_path;
 			buf_push(entries, die);
 		}
 
 		DirLink link = {0};
 		link.inode_num = child_inode_num;
-		link.name_size = (U32)strlen(sub_path) + 1;
+		link.name_size = (U32)strlen(path) + 1;
 		link.entry_size = align_up(link.name_size, DIR_LINK_ENTRY_MIN);
-		link.name = sub_path;
+		link.name = path;
 		buf_push(dir_links, link);
 	}
 
 	DiskImgEntry die = {0};
 	die.inode_type = INODE_DIR;
 	die.inode_num = inode_num;
+	die.path = host_path;
 	die.dir_links = dir_links;
 	buf_push(entries, die);
 
 	return inode_num;
 }
 
-U32 diskimg_write_dir(FILE *fp, DiskImgEntry *dir) {
+// write entry data to data region
+// write addr of each data block and num_addrs to inode table
+// return number of data blocks written
+U32 diskimg_write_entry(FILE *fp, DiskImgEntry *entry, U32 next_available_datablock) {
 	U32 blocks_written = 0;
-	// while not all data written
-		// find first empty data block in data_bitmap, mark as in use
-		// write dir data to data region
-		// write block addr to inode table
-	// write size_in_bytes to inode table
-	return blocks_written;
-}
+	U8 *data = NULL;
+	U64 data_size = 0;
 
-U32 diskimg_write_file(FILE *fp, DiskImgEntry *file) {
-	U32 blocks_written = 0;
-	// open file
-	// while not all data written
-		// find first empty data block in data_bitmap, mark as in use
-		// write dir data to data region
-		// write block addr to inode table
-	// close file
-	// write size_in_bytes to inode table
-	return blocks_written;
-}
+	if (entry->inode_type == INODE_FILE) {
+		if (!read_entire_file(entry->path, &data, &data_size)) {
+			fprintf(stderr, "Error: failed to read file %s\n", entry->path);
+			goto fail;
+		}
+	} else {
+		assert(entry->inode_type == INODE_DIR);
+		U64 size_without_name = sizeof(DirLink) - sizeof(char*);
+		for (int i=0; i<buf_len(entry->dir_links); ++i) {
+			data_size += size_without_name + align_up(entry->dir_links[i].entry_size, 8);;
+		}
+		data = calloc(data_size, 1);
+		if (!data) {
+			fprintf(stderr, "Error: calloc failed to allocate %llu bytes\n", data_size);
+			goto fail;
+		}
 
-size_t diskimg_write_inode_bitmap(FILE *fp, int num_inodes) {
-	assert(num_inodes <= BLOCK_SIZE);
-	U8 buf[BLOCK_SIZE] = {0};
-	U32 *cursor = (U32*)buf;
-	for (int iterations = num_inodes/32; iterations > 0; --iterations) {
-		*cursor++ = 0xFFFFFFFF;
+		U8 *p = data;
+		for (int i=0; i<buf_len(entry->dir_links); ++i) {
+			DirLink *dir_link = &entry->dir_links[i];
+			memcpy(p, dir_link, size_without_name);
+			memcpy(p + size_without_name, dir_link->name, dir_link->name_size);
+			p += size_without_name + align_up(dir_link->entry_size, 8);
+		}
 	}
 
-	int remainder = num_inodes % 32;
+	U32 blocks_needed = (U32)data_size / BLOCK_SIZE;
+	if (data_size % BLOCK_SIZE != 0) ++blocks_needed;
+	assert(blocks_needed <= INODE_NUM_DIRECT_POINTERS);
+
+	U32 offset = DATA_REGION_START + (next_available_datablock * BLOCK_SIZE);
+	int rc = fseek(fp, offset, SEEK_SET);
+	if (rc != 0) {
+		fprintf(stderr, "diskimg_write_entry: fseek failed to seek to %u\n", offset);
+		goto fail;
+	}
+
+	size_t bytes_written = fwrite(data, sizeof(data[0]), data_size, fp);
+	if (bytes_written != data_size) {
+		fprintf(stderr, "diskimg_write_entry: fwrite expected to write %llu bytes, but wrote %zu\n", 
+				data_size, bytes_written);
+		goto fail;
+	}
+
+	blocks_written = blocks_needed;
+	DiskInode *inode = &inodes[entry->inode_num];
+	inode->num_addrs = blocks_needed;
+	for (U32 i=0; i<blocks_needed; ++i) {
+		inode->addrs[i] = offset + i * BLOCK_SIZE;
+	}
+
+fail:
+	free(data);
+	return blocks_written;
+}
+
+
+// write "count" 1s into bitmap at "offset" in file "fp"
+size_t diskimg_write_bitmap_ones(FILE *fp, U32 offset, U32 count) {
+	assert(count <= BLOCK_SIZE);
+	U8 buf[BLOCK_SIZE] = {0};
+	U8 *cursor = buf;
+	for (int iterations = count/8; iterations > 0; --iterations) {
+		*cursor++ = 0xFF;
+	}
+
+	int remainder = count % 8;
 	if (remainder != 0) {
-		U32 mask = (1 << remainder) - 1;
+		U8 mask = 0xFF << (8 - remainder);
 		*cursor++ = mask;
 	}
 
-	int rc = fseek(fp, INODE_BITMAP_START, SEEK_SET);
+	int rc = fseek(fp, offset, SEEK_SET);
 	if (rc != 0) {
-		perror("fseek");
+		fprintf(stderr, "diskimg_write_bitmap_ones: failed to seek to offset %u\n", offset);
 		return 0;
 	}
 
 	size_t written = fwrite(buf, sizeof(buf[0]), BLOCK_SIZE, fp);
 	if (written != BLOCK_SIZE) {
-		fprintf(stderr, "diskimg_write_inode_bitmap: fwrite expected to write %u bytes, but wrote %zu\n", 
+		fprintf(stderr, "diskimg_write_bitmap_ones: fwrite expected to write %u bytes, but wrote %zu\n", 
 			BLOCK_SIZE, written);
 	}
 
@@ -355,6 +456,13 @@ bool diskimg_write_superblock(FILE *fp, U32 num_inodes, U32 num_data_blocks) {
 	return true;
 }
 
+// write inode bitmap (however many inodes, write than many 1s)
+// for each DiskImgEntry:
+// if dir: write_dir()
+// if file: write_file()
+// increment num_data_blocks by how many written
+// write data bitmap using num_data_blocks
+// write superblock
 bool diskimg_write(char *filepath, BUF(DiskInode *inodes), BUF(DiskImgEntry *entries)) {
 	U32 num_data_blocks = 0;
 
@@ -376,30 +484,17 @@ bool diskimg_write(char *filepath, BUF(DiskInode *inodes), BUF(DiskImgEntry *ent
 		return false;
 	}
 
-	diskimg_write_inode_bitmap(fp, buf_len(inodes));
+	diskimg_write_bitmap_ones(fp, INODE_BITMAP_START, buf_len(inodes));
 
-	// for (int i=0; i<buf_len(entries); ++i) {
-		// DiskImgEntry *entry = &entries[i];
-		// U32 blocks_written = 0;
-		// if (entry->inode_type == INODE_DIR) {
-			// blocks_written = diskimg_write_dir(fp, entry);
-		// } else {
-			// blocks_written = diskimg_write_file(fp, entry);
-		// }
-		// num_data_blocks += blocks_written;
-	// }
+	for (int i=0; i<buf_len(entries); ++i) {
+		DiskImgEntry *entry = &entries[i];
+		U32 blocks_written = diskimg_write_entry(fp, entry, num_data_blocks);
+		num_data_blocks += blocks_written;
+	}
+
+	diskimg_write_bitmap_ones(fp, DATA_BITMAP_START, num_data_blocks);
 
 	diskimg_write_superblock(fp, buf_len(inodes), num_data_blocks);
-
-	// write inode bitmap (however many inodes, write than many 1s)
-	// write inode table (types and sizes, addrs will be filled in later)
-
-	// for each DiskImgEntry:
-	// if dir: write_dir()
-	// if file: write_file()
-	// increment num_data_blocks by how many written
-	
-	// write superblock
 
 	fclose(fp);
 	return num_data_blocks;
@@ -408,21 +503,23 @@ bool diskimg_write(char *filepath, BUF(DiskInode *inodes), BUF(DiskImgEntry *ent
 int main(int argc, char **argv) {
 	if (argc < 2) {
 		printf("Usage: %s directory_path\n", argv[0]);
-		exit(1);
+		return 1;
 	}
 
 	char *dir_path = argv[1];
 
-	// make empty entries in inodes up to ROOT_INODE_NUM, to allow directly indexing 
-	// (in our case its just 1 dummy entry)
+	// make empty entries in inodes up to ROOT_INODE_NUM, to allow directly
+	// indexing (in our case its just 1 dummy entry), this kills a little bit
+	// of useful space in the inode table, but oh well
 	for (int i=0; i<ROOT_INODE_NUM; ++i) {
 		buf_push(inodes, (DiskInode){0});
 	}
 
-	U32 root_inode_num = traverse_dir(dir_path, ROOT_INODE_NUM);
+	U32 root_inode_num = traverse_dir(dir_path, "/", ROOT_INODE_NUM);
 	assert(root_inode_num == ROOT_INODE_NUM);
 
-	U32 blocks_written = diskimg_write("disk.img", inodes, entries);
-	// assert(blocks_written > 0);
+	U32 data_blocks_written = diskimg_write("disk.img", inodes, entries);
+
+	return 0;
 }
 
