@@ -14,6 +14,8 @@
 
 #define KILOBYTES(n) (n * 1024)
 #define MEGABYTES(n) (n * 1024 * 1024)
+#define PAGE_SIZE    KILOBYTES(4)
+
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
@@ -21,6 +23,7 @@ typedef int bool;
 typedef unsigned char U8;
 typedef unsigned short U16;
 typedef unsigned int U32;
+typedef int S32;
 typedef unsigned long long U64;
 typedef U32 Paddr;                 // physical address
 typedef U32 Vaddr;                 // virtual address
@@ -30,8 +33,9 @@ enum {
 	SYSCALL_PUTCHAR   = 1,
 	SYSCALL_GETCHAR   = 2,
 	SYSCALL_EXIT      = 3,
-	SYSCALL_READFILE  = 4,
-	SYSCALL_WRITEFILE = 5,
+	SYSCALL_GETPAGES  = 5,
+	SYSCALL_READFILE  = 6,
+	SYSCALL_WRITEFILE = 7,
 };
 
 void *memset(void *buf, U8 val, U32 count);

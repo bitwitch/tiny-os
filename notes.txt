@@ -1,4 +1,6 @@
 TODO:
+[ ] userspace assert
+
 [ ] Go over full boot process
 
 [ ] implement an actual filesystem, maybe start with vsfs from OSTEP
@@ -35,6 +37,16 @@ TODO:
 
 Some important sections are marked with #-, (i.e. #- Section Title),
 this is done so you can use your text editor easily search for them.
+
+2026-01-23
+--------------------------------------------------------------------------------
+Dynamic Memory Allocation
+
+When malloc needs to ask kernel for memory it makes a syscall to grow the heap
+(e.g. sbrk in linux), the kernel does not allocate RAM — it extends a virtual
+address range, updates the process’s VM metadata, and actual physical memory is
+only assigned later, on page fault.
+
 
 
 2025-02-26

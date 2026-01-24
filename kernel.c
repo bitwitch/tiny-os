@@ -34,7 +34,7 @@
 #define VADDR_PAGE_LEVEL0_MASK      (((1 << 10) - 1) << 12)
 #define VADDR_PAGE_LEVEL1_MASK      (VADDR_PAGE_LEVEL0_MASK << 10)
 
-#define PAGE_SIZE      KILOBYTES(4)
+#define SECTOR_SIZE    512
 
 // The base virtual address of an application image. This needs to match the
 // starting address defined in user.ld
@@ -197,6 +197,8 @@ typedef struct {
 	int pid;
 	ProcState state;
 	Vaddr sp;
+	Vaddr heap_start;
+	Vaddr heap_end;
 	U32 *page_table; // pointer to 1st level page table
 	U8 stack[8192]; 
 } Process;
@@ -685,7 +687,8 @@ Process *create_process(void *image, U32 image_size) {
 	map_page(page_table, VIRTIO_BLK_PADDR, VIRTIO_BLK_PADDR, PAGE_R|PAGE_W);
 
 	// map user pages
-	for (U32 offset=0; offset < image_size; offset += PAGE_SIZE) {
+	U32 offset;
+	for (offset=0; offset < image_size; offset += PAGE_SIZE) {
 		U32 remaining = image_size - offset;
 		U32 copy_size = remaining < PAGE_SIZE ? remaining : PAGE_SIZE;
 
@@ -698,6 +701,8 @@ Process *create_process(void *image, U32 image_size) {
 	p->pid = pid;
 	p->state = PROC_RUNNABLE;
 	p->sp = (Vaddr)sp;
+	p->heap_start = USER_BASE + offset;
+	p->heap_end = p->heap_start;
 	p->page_table = page_table;
 
 	return p;
@@ -804,6 +809,13 @@ void handle_syscall(TrapFrame *f) {
 			PANIC("unreachable");
 			break;
 		}
+		case SYSCALL_GETPAGES: {
+			// TODO(shaw): ensure new heap size is valid
+			Vaddr old_heap_end = current_proc->heap_end;
+			current_proc->heap_end += PAGE_SIZE * (U32)f->a0;
+			f->a0 = old_heap_end;
+			break;
+		}
 		case SYSCALL_READFILE: {
 			char *filename = (char*)f->a0;
 			U8 *buf = (U8*)f->a1;
@@ -883,21 +895,74 @@ void handle_syscall(TrapFrame *f) {
 	}
 }
 
+void proc_back_vaddr_with_physical_page(Vaddr vaddr) {
+	// currently assuming this is a process accessing memory in its heap for the first time
+	KERNEL_ASSERT(vaddr >= current_proc->heap_start && vaddr < current_proc->heap_end);
+
+	Vaddr page_start = (vaddr % PAGE_SIZE) == 0 ? vaddr : align_up(vaddr, PAGE_SIZE) - PAGE_SIZE;
+	Paddr new_page = alloc_pages(1);
+	map_page(current_proc->page_table, page_start, new_page, PAGE_U|PAGE_R|PAGE_W|PAGE_X);
+}
+
+bool proc_is_first_access(Vaddr vaddr) {
+	// check if level 1 PTE is valid
+	U32 t1_index = (vaddr & VADDR_PAGE_LEVEL1_MASK) >> VADDR_PAGE_LEVEL1_SHIFT;
+	U32 *table1 = current_proc->page_table;
+	if ((table1[t1_index] & PAGE_V) == 0) {
+		return true;
+	} 
+
+	// check if level 0 PTE is valid
+	U32 t0_page_num = (table1[t1_index] & PTE_PAGE_NUMBER_MASK) >> PTE_PAGE_NUMBER_SHIFT;
+	U32 *table0 = (U32*)(t0_page_num * PAGE_SIZE);
+	U32 t0_index = (vaddr & VADDR_PAGE_LEVEL0_MASK) >> VADDR_PAGE_LEVEL0_SHIFT;
+	if ((table0[t0_index] & PAGE_V) == 0) {
+		return true;
+	}
+
+	return false;
+}
+
 void handle_trap(TrapFrame *f) {
 	(void)f;
     U32 scause  = READ_CSR(scause);
     U32 stval   = READ_CSR(stval);
     U32 user_pc = READ_CSR(sepc);
 
-	if (scause == SCAUSE_ECALL_FROM_U_MODE) {
-		handle_syscall(f);
-		// advance past the ecall instruction so when we switch back to user
-		// mode and jump to sepc, we continue after the ecall instruction
-		user_pc += 4;             
-		WRITE_CSR(sepc, user_pc); 
-	} else {
-		char *scause_description = scause <= SCAUSE_HARDWARE_ERROR ? scause_strings[scause] : "";
-		PANIC("unexpected trap: scause=%x(%s), stval=%x, sepc=%x", scause, scause_description, stval, user_pc);
+	switch (scause) {
+		case SCAUSE_ECALL_FROM_U_MODE:  {
+			handle_syscall(f);
+			// advance past the ecall instruction so when we switch back to user
+			// mode and jump to sepc, we continue after the ecall instruction
+			user_pc += 4;             
+			WRITE_CSR(sepc, user_pc); 
+			break;
+		}
+
+		case SCAUSE_STORE_AMO_PAGE_FAULT: {
+			if (proc_is_first_access(stval)) {
+				proc_back_vaddr_with_physical_page(stval);
+				break;
+			}
+
+			PANIC("%s, stval=%x, sepc=%x", scause_strings[scause], stval, user_pc);
+			break;
+		}
+
+		case SCAUSE_LOAD_PAGE_FAULT: {
+			if (proc_is_first_access(stval)) {
+				proc_back_vaddr_with_physical_page(stval);
+				break;
+			}
+
+			PANIC("%s, stval=%x, sepc=%x", scause_strings[scause], stval, user_pc);
+			break;
+		}
+
+		default: {
+			char *scause_description = scause <= SCAUSE_HARDWARE_ERROR ? scause_strings[scause] : "";
+			PANIC("unexpected trap: scause=%x(%s), stval=%x, sepc=%x", scause, scause_description, stval, user_pc);
+		}
 	}
 }
 
