@@ -1,14 +1,9 @@
 #include "common.h"
+#include "filesystem.h"
 
-#define PROCS_MAX 8
+#define PROCS_MAX   8
 
-#define PATH_MAX       100
-#define FILE_SIZE_MAX  KILOBYTES(3)
-#define FILES_MAX      32
-#define SECTOR_SIZE    512
-#define DISK_SIZE_MAX  align_up(MEGABYTES(2), SECTOR_SIZE)
-
-// SATP register (supervisor address translation and protection)
+// SATP register (Supervisor Address Translation and Protection)
 // |  31  |     30 - 22   |                 21 - 0                      |
 // | Mode | addr space id | phyiscal page number where page table lives |
 #define SATP_SV32 (1u << 31)
@@ -51,6 +46,11 @@
 		while (1) {}                                                           \
 	} while (0)
 
+#define KERNEL_ASSERT(cond)                                                           \
+	if (!(cond)) {                                                             \
+		PANIC("assertion failed: %s", #cond);                                  \
+	}                                                                          
+ 
 #define READ_CSR(reg)                                                          \
 	({                                                                         \
 		unsigned long __tmp;                                                   \
@@ -169,13 +169,6 @@ struct TarHeader {
 } __attribute__((packed));
 
 typedef struct {
-	bool in_use;
-	U32 size;
-	U8 *data;
-	char name[PATH_MAX];
-} File;
-
-typedef struct {
 	long error;
 	union {
 		long value;
@@ -270,8 +263,8 @@ static Virtq *virtio_blk_virtq;
 static U64 virtio_blk_num_sectors;
 
 static File files[FILES_MAX];
-static U32 num_files;
-static U8* disk;
+// static U32 num_files;
+static Superblock *superblock;
 
 Paddr alloc_pages(U32 n);
 
@@ -386,11 +379,11 @@ bool virtq_is_busy(Virtq *vq) {
 	return vq->last_used_index != *vq->used_index_ptr;
 }
 
-void virtio_blk_read_write_sector(void *buf, U64 sector, bool is_write) {
+bool virtio_blk_read_write_sector(void *buf, U64 sector, bool is_write) {
 	if (sector >= virtio_blk_num_sectors) {
 		printf("virtio: tried to %s sector %d, but virtio-blk device only contains %d sectors\n",
 				is_write ? "write" : "read", (U32)sector, (U32)virtio_blk_num_sectors);
-		return;
+		return false;
 	}
 
 	VirtioBlkRequest req = {0};
@@ -422,18 +415,30 @@ void virtio_blk_read_write_sector(void *buf, U64 sector, bool is_write) {
 
 	if (req.status != 0) {
 		printf("virtio: failed to read sector=%d status=%d\n", sector, req.status);
-		return;
+		return false;
 	}
 
 	if (!is_write) memcpy(buf, req.data, SECTOR_SIZE);
+
+	return true;
 }
 
-inline void virtio_blk_read_sector(void *buf, U64 sector) {
-	virtio_blk_read_write_sector(buf, sector, false);
+inline bool virtio_blk_read_sector(void *buf, U64 sector) {
+	return virtio_blk_read_write_sector(buf, sector, false);
 }
 
-inline void virtio_blk_write_sector(void *buf, U64 sector) {
-	virtio_blk_read_write_sector(buf, sector, true);
+inline bool virtio_blk_write_sector(void *buf, U64 sector) {
+	return virtio_blk_read_write_sector(buf, sector, true);
+}
+
+bool disk_read_block(void *buf, U32 block) {
+	KERNEL_ASSERT(DISK_BLOCK_SIZE % SECTOR_SIZE == 0);
+	U32 sectors_per_block = DISK_BLOCK_SIZE / SECTOR_SIZE;
+	U32 sector_start = block * sectors_per_block;
+	for (U32 i=0; i<sectors_per_block; ++i) {
+		if (!virtio_blk_read_sector(buf + i * SECTOR_SIZE, sector_start + i)) return false;
+	}
+	return true;
 }
 
 U32 u32_from_octal(char *oct, int len) {
@@ -473,98 +478,95 @@ void octal_from_u32(U32 u32, char *oct, int len) {
 
 
 void filesystem_init(void) {
+	// read superblock into memory
+	// verify magic and size_in_blocks
+	// ?? make sure device size is enough for size_in_blocks ??
+	// ?? make sure num_inodes is <= max inodes (FILES_MAX) ??
+
 	U32 device_size = virtio_blk_num_sectors * SECTOR_SIZE;
-	if (device_size > DISK_SIZE_MAX) {
-		PANIC("disk max size is %d, but virto-blk device size is %d", DISK_SIZE_MAX, device_size);
-	}
-	U32 num_pages = align_up(device_size, PAGE_SIZE) / PAGE_SIZE;
-	disk = (U8*)alloc_pages(num_pages);
 
-	// read entire disk into memory	
-	for (U64 sector=0; sector < virtio_blk_num_sectors; ++sector) {
-		virtio_blk_read_sector(disk + sector * SECTOR_SIZE, sector);
+	superblock = (Superblock*)alloc_pages(1);
+	U32 superblock_block_id = 1;
+	if (!disk_read_block(superblock, superblock_block_id)) {
+		PANIC("failed to initialize filesystem: failed to read superblock");
 	}
 
-	// parse disk memory into files
-	for (U8 *p = disk; p < disk + device_size; ) {
-		TarHeader *header = (TarHeader*)p;
-
-		if (header->name[0] == '\0') break;
-
-		if (0 != strcmp(header->magic, "ustar")) {
-			PANIC("failed to initialize filesystem: invalid tar header: filename=%s magic=%s", 
-				header->name, header->magic);
-		}
-
-		File *file = &files[num_files++];
-
-		file->in_use = true;
-		strcpy(file->name, header->name);
-		file->size = u32_from_octal(header->size, sizeof(header->size));
-		file->data = (U8*)header->data;
-
-		printf("%s: %s, size=%d\n", header->type == '5' ? "dir " : "file", file->name, file->size);
-
-		p += align_up(sizeof(TarHeader) + file->size, SECTOR_SIZE);
+	if (superblock->magic != VSFS_MAGIC) {
+		PANIC("invalid magic number for filesystem: %x (\"%c%c%c%c\")", superblock->magic, 
+			((char*)&superblock->magic)[0],
+			((char*)&superblock->magic)[1],
+			((char*)&superblock->magic)[2],
+			((char*)&superblock->magic)[3]);
 	}
+
+	U32 disk_img_size = superblock->size_in_blocks * DISK_BLOCK_SIZE;
+	if (disk_img_size > device_size) {
+		printf("Warning: virtio-blk device size is %u, but disk image size is %u.\n", device_size, disk_img_size); 
+	}
+
+	if (superblock->num_inodes > FILES_MAX) {
+		printf("Warning: filesystem only supports %u files, but superblock in disk image reports %u files.\n", FILES_MAX, superblock->num_inodes);
+	}
+
+	printf("filesystem initialized\n");
 }
 
-void filesystem_flush(void) {
-	// write all files into tar format in "disk"
-	U32 off = 0;
-	U8 *disk_end = disk;
-	for (int i=0; i<FILES_MAX; ++i) {
-		File *f = &files[i];
-		if (f->in_use) {
-			TarHeader h = {0};
-			strcpy(h.name, f->name);
-			strcpy(h.mode, "000644");
-			octal_from_u32(f->size, h.size, sizeof(h.size));
+// void filesystem_flush(void) {
+	// // write all files into tar format in "disk"
+	// U32 off = 0;
+	// U8 *disk_end = disk;
+	// for (int i=0; i<FILES_MAX; ++i) {
+		// File *f = &files[i];
+		// if (f->in_use) {
+			// TarHeader h = {0};
+			// strcpy(h.name, f->name);
+			// strcpy(h.mode, "000644");
+			// octal_from_u32(f->size, h.size, sizeof(h.size));
 
-			h.type = '0';
-			strcpy(h.magic, "ustar");
-			strcpy(h.version, "00");
+			// h.type = '0';
+			// strcpy(h.magic, "ustar");
+			// strcpy(h.version, "00");
 
-			// calculate checksum
-			U32 checksum = 0;
-			for (U32 i=0; i < sizeof(h); ++i) {
-				checksum += *((U8*)(&h + i));
-			}
-			// with the eight checksum bytes taken to be ASCII spaces (decimal value 32)
-			checksum += 8 * 32;
-			octal_from_u32(checksum, h.checksum, 7);
-			h.checksum[7] = ' ';
+			// // calculate checksum
+			// U32 checksum = 0;
+			// for (U32 i=0; i < sizeof(h); ++i) {
+				// checksum += *((U8*)(&h + i));
+			// }
+			// // with the eight checksum bytes taken to be ASCII spaces (decimal value 32)
+			// checksum += 8 * 32;
+			// octal_from_u32(checksum, h.checksum, 7);
+			// h.checksum[7] = ' ';
 
-			U32 file_size_aligned = align_up(f->size, SECTOR_SIZE);
-			disk_end = disk + off + offsetof(TarHeader, data) + file_size_aligned;
-			if ((U32)(disk_end - disk) > DISK_SIZE_MAX) {
-				PANIC("not enough space in disk, max disk size is %d", (int)DISK_SIZE_MAX);
-			}
+			// U32 file_size_aligned = align_up(f->size, SECTOR_SIZE);
+			// disk_end = disk + off + offsetof(TarHeader, data) + file_size_aligned;
+			// if ((U32)(disk_end - disk) > DISK_SIZE_MAX) {
+				// PANIC("not enough space in disk, max disk size is %d", (int)DISK_SIZE_MAX);
+			// }
 
-			memcpy(disk + off, &h, sizeof(h));
-			memcpy(disk + off + offsetof(TarHeader, data), f->data, f->size);
+			// memcpy(disk + off, &h, sizeof(h));
+			// memcpy(disk + off + offsetof(TarHeader, data), f->data, f->size);
 
-			U8 *start_zeros = disk + off + offsetof(TarHeader, data) + f->size;
-			U32 zeros_size = (U32)(disk_end - start_zeros);
-			memset(start_zeros, 0, zeros_size);
+			// U8 *start_zeros = disk + off + offsetof(TarHeader, data) + f->size;
+			// U32 zeros_size = (U32)(disk_end - start_zeros);
+			// memset(start_zeros, 0, zeros_size);
 
-			off = (U32)(disk_end - disk);
-		}
-	}
+			// off = (U32)(disk_end - disk);
+		// }
+	// }
 
-	// write in memory disk out to virtio-blk device
-	U64 num_sectors = align_up((U32)(disk_end - disk), SECTOR_SIZE) / SECTOR_SIZE;
-	U64 sector = 0;
-	for (sector=0; sector < num_sectors; ++sector) {
-		virtio_blk_write_sector(disk + sector * SECTOR_SIZE, sector);
-	}
+	// // write in memory disk out to virtio-blk device
+	// U64 num_sectors = align_up((U32)(disk_end - disk), SECTOR_SIZE) / SECTOR_SIZE;
+	// U64 sector = 0;
+	// for (sector=0; sector < num_sectors; ++sector) {
+		// virtio_blk_write_sector(disk + sector * SECTOR_SIZE, sector);
+	// }
 
-	// fill the rest with 0s
-	U8 zero_sector[SECTOR_SIZE] = {0};
-	for (; sector < virtio_blk_num_sectors; ++sector) {
-		virtio_blk_write_sector(zero_sector, sector);
-	}
-}
+	// // fill the rest with 0s
+	// U8 zero_sector[SECTOR_SIZE] = {0};
+	// for (; sector < virtio_blk_num_sectors; ++sector) {
+		// virtio_blk_write_sector(zero_sector, sector);
+	// }
+// }
 
 SBI_Ret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
 		         long fid, long eid)
@@ -1007,7 +1009,7 @@ void kernel_main(void) {
 
 	yield();
 
-	filesystem_flush();
+	// filesystem_flush();
 	PANIC("switched to idle process");
 }
 

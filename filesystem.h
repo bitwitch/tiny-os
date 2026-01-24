@@ -18,11 +18,18 @@ data region size:    16MB (4096 blocks)
 0KB     4KB     8KB      12KB     16KB        272KB                              16656KB
 */
 
+#define PATH_MAX                   256
 #define ROOT_INODE_NUM             1    // zero is reserved for a non-existent file
 #define INODE_NUM_DIRECT_POINTERS  12
 #define SYS_OPEN_FILES_MAX         128
 #define PROC_OPEN_FILES_MAX        32
 #define DISK_DIR_ENTRY_MIN         12
+#define DISK_BLOCK_SIZE            KILOBYTES(4)
+#define SUPERBLOCK_START           KILOBYTES(4)
+#define FILE_SIZE_MAX              (INODE_NUM_DIRECT_POINTERS * DISK_BLOCK_SIZE)
+#define FILES_MAX                  DISK_BLOCK_SIZE
+#define VSFS_MAGIC                 0x73667376   // "vsfs"
+
 
 enum {
 	INODE_NONE,
@@ -31,18 +38,13 @@ enum {
 };
 
 typedef struct {
-	int type;
-	U32 size_in_bytes;
-	U32 addrs[INODE_NUM_DIRECT_POINTERS];
-} DiskInode;
-
-typedef struct {
 	U32 inode_num;
 	// TODO: some kind of lock for synchronization
 	bool valid;
 
 	// copy of on disk inode
-	int type;
+	U8 type;
+	U8 num_addrs;
 	U32 size_in_bytes;
 	U32 addrs[INODE_NUM_DIRECT_POINTERS];
 } Inode;
@@ -55,6 +57,13 @@ typedef struct {
   U32 inode_start;   // Block number of first inode block
   U32 data_start;    // Block number of first data block
 } Superblock;
+
+typedef struct {
+	bool in_use;
+	U32 size;
+	U8 *data;
+	char name[PATH_MAX];
+} File;
 
 struct {
 	// TODO: a lock here

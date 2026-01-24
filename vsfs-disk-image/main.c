@@ -141,7 +141,6 @@ typedef struct {
 	U32 addrs[INODE_NUM_DIRECT_POINTERS];
 } DiskInode;
 
-#pragma pack(4)
 typedef struct {
   U32 magic;         // Must be "vsfs"
   U32 size_in_blocks; 
@@ -371,8 +370,7 @@ U32 diskimg_write_entry(FILE *fp, DiskImgEntry *entry, U32 next_available_databl
 		}
 	}
 
-	U32 blocks_needed = (U32)data_size / BLOCK_SIZE;
-	if (data_size % BLOCK_SIZE != 0) ++blocks_needed;
+	U32 blocks_needed = align_up((U32)data_size, BLOCK_SIZE) / BLOCK_SIZE;
 	assert(blocks_needed <= INODE_NUM_DIRECT_POINTERS);
 
 	U32 offset = DATA_REGION_START + (next_available_datablock * BLOCK_SIZE);
