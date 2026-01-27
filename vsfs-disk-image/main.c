@@ -133,12 +133,14 @@ enum {
 	INODE_FILE,
 };
 
-// must be 64 bytes
+// must be no bigger than 64 bytes
+#pragma pack(4)
 typedef struct {
-	U8 type;
-	U8 num_addrs;
+	U32 type;
+	U32 num_addrs;
 	U32 size_in_bytes;
 	U32 addrs[INODE_NUM_DIRECT_POINTERS];
+	U8 pad[48];
 } DiskInode;
 
 typedef struct {
@@ -160,7 +162,7 @@ typedef struct {
 typedef struct {
 	U8 inode_type;
 	U32 inode_num;
-	char *path;              // the path where the file lives on the host system, not necessarily the same name that will be in the disk image
+	char *host_path; // the path where the file lives on the host system, not necessarily the same name that will be in the disk image
 	BUF(DirLink *dir_links); // for inode type dir only
 } DiskImgEntry;
 
@@ -310,11 +312,12 @@ U32 traverse_dir(char *host_path, char *out_path_base, U32 parent_inode_num) {
 		} else {
 			child_inode_num = buf_len(inodes);
 			assert(entry->size < BLOCK_SIZE * INODE_NUM_DIRECT_POINTERS);
+			U32 blocks_needed = align_up((U32)entry->size, BLOCK_SIZE) / BLOCK_SIZE;
 			buf_push(inodes, (DiskInode){.type = INODE_FILE, .size_in_bytes = (U32)entry->size});
 			DiskImgEntry die = {0};
 			die.inode_type = INODE_FILE;
 			die.inode_num = child_inode_num;
-			die.path = host_child_path;
+			die.host_path = host_child_path;
 			buf_push(entries, die);
 		}
 
@@ -329,7 +332,7 @@ U32 traverse_dir(char *host_path, char *out_path_base, U32 parent_inode_num) {
 	DiskImgEntry die = {0};
 	die.inode_type = INODE_DIR;
 	die.inode_num = inode_num;
-	die.path = host_path;
+	die.host_path = host_path;
 	die.dir_links = dir_links;
 	buf_push(entries, die);
 
@@ -345,15 +348,15 @@ U32 diskimg_write_entry(FILE *fp, DiskImgEntry *entry, U32 next_available_databl
 	U64 data_size = 0;
 
 	if (entry->inode_type == INODE_FILE) {
-		if (!read_entire_file(entry->path, &data, &data_size)) {
-			fprintf(stderr, "Error: failed to read file %s\n", entry->path);
+		if (!read_entire_file(entry->host_path, &data, &data_size)) {
+			fprintf(stderr, "Error: failed to read file %s\n", entry->host_path);
 			goto fail;
 		}
 	} else {
 		assert(entry->inode_type == INODE_DIR);
 		U64 size_without_name = sizeof(DirLink) - sizeof(char*);
 		for (int i=0; i<buf_len(entry->dir_links); ++i) {
-			data_size += size_without_name + align_up(entry->dir_links[i].entry_size, 8);;
+			data_size += size_without_name + align_up(entry->dir_links[i].entry_size, 4);
 		}
 		data = calloc(data_size, 1);
 		if (!data) {
@@ -366,7 +369,7 @@ U32 diskimg_write_entry(FILE *fp, DiskImgEntry *entry, U32 next_available_databl
 			DirLink *dir_link = &entry->dir_links[i];
 			memcpy(p, dir_link, size_without_name);
 			memcpy(p + size_without_name, dir_link->name, dir_link->name_size);
-			p += size_without_name + align_up(dir_link->entry_size, 8);
+			p += size_without_name + align_up(dir_link->entry_size, 4);
 		}
 	}
 
@@ -393,6 +396,7 @@ U32 diskimg_write_entry(FILE *fp, DiskImgEntry *entry, U32 next_available_databl
 	for (U32 i=0; i<blocks_needed; ++i) {
 		inode->addrs[i] = offset + i * BLOCK_SIZE;
 	}
+	inode->size_in_bytes = (U32)data_size;
 
 fail:
 	free(data);
@@ -428,6 +432,23 @@ size_t diskimg_write_bitmap_ones(FILE *fp, U32 offset, U32 count) {
 	}
 
 	return written;
+}
+
+bool diskimg_write_inode_table(FILE *fp, DiskInode *inodes, U32 num_inodes) {
+	int rc = fseek(fp, INODE_TABLE_START, SEEK_SET);
+	if (rc != 0) {
+		perror("fseek");
+		return false;
+	}
+
+	for (U32 i=0; i<num_inodes; ++i) {
+		if (fwrite(&inodes[i], sizeof(inodes[i]), 1, fp) != 1) {
+			perror("fwrite");
+			return false;
+		}
+	}	
+
+	return true;
 }
 
 bool diskimg_write_superblock(FILE *fp, U32 num_inodes, U32 num_data_blocks) {
@@ -484,11 +505,14 @@ bool diskimg_write(char *filepath, BUF(DiskInode *inodes), BUF(DiskImgEntry *ent
 
 	diskimg_write_bitmap_ones(fp, INODE_BITMAP_START, buf_len(inodes));
 
+
 	for (int i=0; i<buf_len(entries); ++i) {
 		DiskImgEntry *entry = &entries[i];
 		U32 blocks_written = diskimg_write_entry(fp, entry, num_data_blocks);
 		num_data_blocks += blocks_written;
 	}
+
+	diskimg_write_inode_table(fp, inodes, buf_len(inodes));
 
 	diskimg_write_bitmap_ones(fp, DATA_BITMAP_START, num_data_blocks);
 
