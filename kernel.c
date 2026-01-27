@@ -49,7 +49,7 @@
 
 #define KERNEL_ASSERT(cond, fmt, ...)                                          \
 	if (!(cond)) {                                                             \
-		PANIC("assertion failed: %s: " fmt, #cond, ##__VA_ARGS__);             \
+		PANIC("assertion failed: '%s': " fmt, #cond, ##__VA_ARGS__);             \
 	}                                                                          
  
 #define READ_CSR(reg)                                                          \
@@ -718,6 +718,7 @@ Process *create_process(void *image, U32 image_size) {
 	p->heap_start = USER_BASE + offset;
 	p->heap_end = p->heap_start;
 	p->page_table = page_table;
+	p->num_fds = 3; // reserve 3 fds for stdin, stdout, stderr
 
 	return p;
 }
@@ -829,7 +830,7 @@ bool proc_is_first_access(Vaddr vaddr) {
 }
 
 int proc_append_fd(File *file) {
-	if (current_proc->num_fds < SYS_OPEN_FILES_MAX) {
+	if (current_proc->num_fds >= SYS_OPEN_FILES_MAX) {
 		return -1;		
 	}
 
@@ -838,6 +839,7 @@ int proc_append_fd(File *file) {
 	return fd;
 }
 
+// adds a new File to open file table and returns a pointer to it
 File *append_open_file(U32 inode_num, U32 size) {
 	if (num_open_files >= SYS_OPEN_FILES_MAX) {
 		return NULL;
@@ -851,6 +853,8 @@ File *append_open_file(U32 inode_num, U32 size) {
 	return file;
 }
 
+// search open file table for inode num
+// returns File * if found or NULL if not
 File *open_file_from_inode_num(U32 inode_num) {
 	File *file = NULL;
 	for (U32 i=0; i<SYS_OPEN_FILES_MAX; ++i) {
@@ -912,67 +916,75 @@ void path_join(char path[PATH_MAX], char *src) {
 }
 
 
+bool find_path_in_subdir(Inode *subdir_inode, char *target_path, U32 *inode_num) {
+	for (U32 i=0; i < subdir_inode->num_addrs; ++i) {
+		U8 buf[DISK_BLOCK_SIZE];
+
+		U32 block_id = subdir_inode->addrs[i] / DISK_BLOCK_SIZE;
+		printf("reading block %u\n", block_id);
+		if (!disk_read_block(buf, block_id)) {
+			printf("%s:%d failed to read disk block %d\n", __FILE__, __LINE__, block_id);
+
+		}
+
+		// iterate the DirLink entries in subdir_inode
+		printf("reading entries in subdir\n");
+		for (U32 offset=0; offset < subdir_inode->size; ) {
+			DirLink *entry = (DirLink*)(buf + offset);
+
+			printf("\toffset=%u entry: %s inode=%u\n", 
+				offset, entry->name, entry->inode_num);
+
+			KERNEL_ASSERT(entry->inode_num != 0, "syscall open: invalid inode %u", entry->inode_num);
+
+			// TODO: this is stupid do something better
+			if (entry->name[0] == '.') {
+				printf("sizeof(entry)=%u name_size_with_padding=%u aligned size=%u\n", 
+					sizeof(*entry), entry->name_size_with_padding, align_up(sizeof(*entry) + entry->name_size_with_padding, 4));
+				U32 total_entry_size = align_up(sizeof(*entry) + entry->name_size_with_padding, 4);
+				offset += total_entry_size;
+				continue;
+			}
+
+			if (0 == strcmp(target_path, entry->name)) {
+				*inode_num = entry->inode_num;
+				return true;
+			}
+
+
+			U32 total_entry_size = align_up(sizeof(*entry) + entry->name_size_with_padding, 4);
+			offset += total_entry_size;
+		}
+	}
+	return false;
+}
+
+
 int syscall_open(char *path, U32 flags, U32 mode) {
 	Inode *root_inode = &inodes[ROOT_INODE_NUM];
 
 	print_inode(ROOT_INODE_NUM);
 
-	char root_path[PATH_MAX] = {0};
-	root_path[0] = '/';
+	U32 inode_num = 0;
+	if (find_path_in_subdir(root_inode, path, &inode_num)) {
+		Inode *inode = &inodes[inode_num];
+		File *file = open_file_from_inode_num(inode_num);
 
-	for (U32 i=0; i < root_inode->num_addrs; ++i) {
-		U8 buf[DISK_BLOCK_SIZE];
-
-		U32 block_id = root_inode->addrs[i] / DISK_BLOCK_SIZE;
-		printf("reading block %u\n", block_id);
-		if (!disk_read_block(buf, block_id)) {
-			// TODO: handle fail
+		if (!file) {
+			file = append_open_file(inode_num, inode->size);
+			if (!file) {
+				printf("Error: failed to open %s: kernel already has max files open\n");
+				// TODO: set errno or something
+				return -1;
+			}
 		}
 
-		// iterate the DirLink entries in root_inode
-		printf("reading entries in root\n");
-		for (U32 offset=0; offset < root_inode->size; ) {
-			DirLink *entry = (DirLink*)(buf + offset);
-			KERNEL_ASSERT(entry->inode_num != 0, "syscall open: invalid inode %u", entry->inode_num);
-
-			// TODO: this is stupid do something better
-			if (entry->name[0] == '.') {
-				U32 total_entry_size = align_up(sizeof(entry) + entry->name_size_with_padding, 4);
-				offset += total_entry_size;
-				continue;
-			}
-
-			Inode *entry_inode = &inodes[entry->inode_num];
-
-			char cur_path[PATH_MAX] = {0};
-			path_copy(cur_path, root_path);
-			// NOTE: must use path_join_n because entry->name is not necessarily null terminated
-			path_join_n(cur_path, entry->name, entry->name_size); 
-			printf("cur_path = %s, entry = %s\n", cur_path, entry->name);
-
-			if (0 == strcmp(path, cur_path)) {
-				File *file = open_file_from_inode_num(entry->inode_num);
-
-				if (!file) {
-					file = append_open_file(entry->inode_num, entry_inode->size);
-					if (!file) {
-						printf("Error: failed to open %s: kernel already has max files open\n");
-						// TODO: set errno or something
-						return -1;
-					}
-				}
-
-				int fd = proc_append_fd(file);
-				if (fd < 0) {
-					printf("Error: failed to open %s: proc %d already has max file descriptors\n", path, current_proc->pid);
-					// TODO: set errno or something
-				}
-				return fd;
-			}
-
-			U32 total_entry_size = align_up(sizeof(entry) + entry->name_size_with_padding, 4);
-			offset += total_entry_size;
+		int fd = proc_append_fd(file);
+		if (fd < 0) {
+			printf("Error: failed to open %s: proc %d already has max file descriptors\n", path, current_proc->pid);
+			// TODO: set errno or something
 		}
+		return fd;
 	}
 
 	return -1;
@@ -1011,7 +1023,15 @@ void handle_syscall(TrapFrame *f) {
 		}
 
 		case SYSCALL_OPEN: {
-			char *path = (char*)f->a0;
+			char *user_path = (char*)f->a0;
+
+			// copy path string from userspace memory to kernel memory
+			U32 status_reg = READ_CSR(sstatus);
+			WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
+			char path[PATH_MAX] = {0};
+			path_copy(path, user_path);
+			WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
+
 			U32 flags = f->a1;
 			U32 mode = f->a2;
 			f->a0 = syscall_open(path, flags, mode);
