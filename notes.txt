@@ -1,11 +1,13 @@
 TODO:
-[ ] userspace assert
-
+[ ] add arguments (argc and argv) to main from start()
 [ ] Go over full boot process
 
 [ ] implement an actual filesystem, maybe start with vsfs from OSTEP
-	[ ] create a filesystem image in vsfs format
-	[ ] read the metadata into data structures
+	[X] create a filesystem image in vsfs format
+	[X] read the metadata into data structures
+	[ ] read from files
+  [ ] write to files
+
 
 [ ] notion of current directory, and shell commands for navigating filesystem
 
@@ -28,6 +30,7 @@ TODO:
     - this will also require managing the memory for all the requests
 
 
+[X] userspace assert
 [X] rewrite memmove in non stupid way
 	[X] remove exit() in kernel
 [X] %u format specifier in printf
@@ -37,6 +40,38 @@ TODO:
 
 Some important sections are marked with #-, (i.e. #- Section Title),
 this is done so you can use your text editor easily search for them.
+
+2026-01-26
+--------------------------------------------------------------------------------
+Files
+
+See "The Linux Programming Interface", section 5.4 Relationship between file descriptors
+and open files, pg 95, figure 5-2
+- Data structures maintained by kernel:
+	- Per-process file descriptor table (fd flags, file ptr)
+	- system-wide open file table (file offset, status flags, inode ptr)
+	- system-wide inode table (file type, file locks)
+
+- see the open(2) man page for reasons why open may fail
+
+
+Thoughts on how to proceed with implementing file i/o:
+- write the inode table into disk image 
+- create structures for file descriptor table in Process struct
+- create open file table in kernel
+- create in-memory inode table in kernel
+- on boot, read inode bitmap and load inode table from disk 
+
+- open syscall: create a new file descriptor in process descriptor table, return
+  it to process
+
+- stat syscall: given a path and a pointer to struct stat, fill in the structure
+  and return 0 on success, -1 on error (set errno?)
+
+Processes
+- argv, environment variables, etc. can be stored in processes address space, in
+  linux this occurs above the stack, before kernel memory that is mapped into
+  process
 
 2026-01-23
 --------------------------------------------------------------------------------
@@ -48,6 +83,7 @@ address range, updates the process’s VM metadata, and actual physical memory i
 only assigned later, on page fault.
 
 
+https://osdev.wiki/wiki/RISC-V_Paging
 
 2025-02-26
 --------------------------------------------------------------------------------

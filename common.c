@@ -68,6 +68,17 @@ char *strcpy(char *dest, char *src) {
 	return dest;
 }
 
+char *strncpy(char *dest, char *src, U32 size) {
+	U32 i;
+	for (i=0; src[i] != 0 && i < size; ++i) {
+		dest[i]	= src[i];
+	}
+	for (; i < size; ++i) {
+		dest[i]	= 0;
+	}
+	return dest;
+}
+
 bool isspace(int c) {
 	return c == ' ' || (unsigned)c-'\t' < 5;
 }
@@ -160,4 +171,5 @@ void printf(char *fmt, ...) {
 
 	va_end(args);
 }
+
 

@@ -16,8 +16,9 @@
 #define MEGABYTES(n) (n * 1024 * 1024)
 #define PAGE_SIZE    KILOBYTES(4)
 
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b)    ((a) < (b) ? (a) : (b))
+#define MAX(a, b)    ((a) > (b) ? (a) : (b))
+#define ARRAY_LEN(a) sizeof(a) / sizeof(a[0])
 
 typedef int bool;
 typedef unsigned char U8;
@@ -34,8 +35,7 @@ enum {
 	SYSCALL_GETCHAR   = 2,
 	SYSCALL_EXIT      = 3,
 	SYSCALL_GETPAGES  = 5,
-	SYSCALL_READFILE  = 6,
-	SYSCALL_WRITEFILE = 7,
+	SYSCALL_OPEN      = 6,
 };
 
 void *memset(void *buf, U8 val, U32 count);
@@ -45,7 +45,9 @@ int memcmp(void *lhs, void *rhs, U32 count);
 int strcmp(char *str1, char *str2);
 U32 strlen(char *s);
 char *strcpy(char *dest, char *src);
+char *strncpy(char *dest, char *src, U32 size);
 void printf(char *fmt, ...);
 void putchar(char c);
 int getchar(void);
 bool isspace(int c);
+

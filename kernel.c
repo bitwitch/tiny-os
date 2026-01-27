@@ -1,3 +1,4 @@
+#define IS_KERNEL 1
 #include "common.h"
 #include "filesystem.h"
 
@@ -46,9 +47,9 @@
 		while (1) {}                                                           \
 	} while (0)
 
-#define KERNEL_ASSERT(cond)                                                           \
+#define KERNEL_ASSERT(cond, fmt, ...)                                          \
 	if (!(cond)) {                                                             \
-		PANIC("assertion failed: %s", #cond);                                  \
+		PANIC("assertion failed: %s: " fmt, #cond, ##__VA_ARGS__);             \
 	}                                                                          
  
 #define READ_CSR(reg)                                                          \
@@ -196,11 +197,13 @@ typedef enum {
 typedef struct {
 	int pid;
 	ProcState state;
-	Vaddr sp;
+	Vaddr sp;         // stack pointer
 	Vaddr heap_start;
 	Vaddr heap_end;
-	U32 *page_table; // pointer to 1st level page table
+	U32 *page_table;  // pointer to 1st level page table
 	U8 stack[8192]; 
+	File *descriptor_table[SYS_OPEN_FILES_MAX];
+	U32 num_fds;
 } Process;
 
 enum {
@@ -264,9 +267,11 @@ static Process idle_proc;
 static Virtq *virtio_blk_virtq;
 static U64 virtio_blk_num_sectors;
 
-static File files[FILES_MAX];
-// static U32 num_files;
+static File open_files[SYS_OPEN_FILES_MAX];
+static U32 num_open_files;
+
 static Superblock *superblock;
+static Inode inodes[FILES_MAX];
 
 Paddr alloc_pages(U32 n);
 
@@ -434,7 +439,7 @@ inline bool virtio_blk_write_sector(void *buf, U64 sector) {
 }
 
 bool disk_read_block(void *buf, U32 block) {
-	KERNEL_ASSERT(DISK_BLOCK_SIZE % SECTOR_SIZE == 0);
+	KERNEL_ASSERT(DISK_BLOCK_SIZE % SECTOR_SIZE == 0, "");
 	U32 sectors_per_block = DISK_BLOCK_SIZE / SECTOR_SIZE;
 	U32 sector_start = block * sectors_per_block;
 	for (U32 i=0; i<sectors_per_block; ++i) {
@@ -508,6 +513,15 @@ void filesystem_init(void) {
 
 	if (superblock->num_inodes > FILES_MAX) {
 		printf("Warning: filesystem only supports %u files, but superblock in disk image reports %u files.\n", FILES_MAX, superblock->num_inodes);
+	}
+
+	U32 inode_table_first_block = 4;
+	U32 inodes_per_block = DISK_BLOCK_SIZE / sizeof(Inode);
+	U32 inode_table_size_in_blocks = 64;
+	for (U32 i=0; i<inode_table_size_in_blocks; ++i) {
+		if (!disk_read_block(inodes + i * inodes_per_block, inode_table_first_block + i)) {
+			PANIC("failed to initialize filesystem: failed to read inode table");
+		}
 	}
 
 	printf("filesystem initialized\n");
@@ -785,6 +799,185 @@ void yield(void) {
 	}
 }
 
+void proc_back_vaddr_with_physical_page(Vaddr vaddr) {
+	// currently assuming this is a process accessing memory in its heap for the first time
+	KERNEL_ASSERT(vaddr >= current_proc->heap_start && vaddr < current_proc->heap_end, 
+		"heap_start=%x, heap_end=%x, vaddr=%x", current_proc->heap_start, current_proc->heap_end, vaddr);
+
+	Vaddr page_start = (vaddr % PAGE_SIZE) == 0 ? vaddr : align_up(vaddr, PAGE_SIZE) - PAGE_SIZE;
+	Paddr new_page = alloc_pages(1);
+	map_page(current_proc->page_table, page_start, new_page, PAGE_U|PAGE_R|PAGE_W|PAGE_X);
+}
+
+bool proc_is_first_access(Vaddr vaddr) {
+	// check if level 1 PTE is valid
+	U32 t1_index = (vaddr & VADDR_PAGE_LEVEL1_MASK) >> VADDR_PAGE_LEVEL1_SHIFT;
+	U32 *table1 = current_proc->page_table;
+	if ((table1[t1_index] & PAGE_V) == 0) {
+		return true;
+	} 
+
+	// check if level 0 PTE is valid
+	U32 t0_page_num = (table1[t1_index] & PTE_PAGE_NUMBER_MASK) >> PTE_PAGE_NUMBER_SHIFT;
+	U32 *table0 = (U32*)(t0_page_num * PAGE_SIZE);
+	U32 t0_index = (vaddr & VADDR_PAGE_LEVEL0_MASK) >> VADDR_PAGE_LEVEL0_SHIFT;
+	if ((table0[t0_index] & PAGE_V) == 0) {
+		return true;
+	}
+
+	return false;
+}
+
+int proc_append_fd(File *file) {
+	if (current_proc->num_fds < SYS_OPEN_FILES_MAX) {
+		return -1;		
+	}
+
+	int fd = current_proc->num_fds++;
+	current_proc->descriptor_table[fd] = file;
+	return fd;
+}
+
+File *append_open_file(U32 inode_num, U32 size) {
+	if (num_open_files >= SYS_OPEN_FILES_MAX) {
+		return NULL;
+	}
+
+	File *file = &open_files[num_open_files++];
+	file->inode_num = inode_num;
+	file->ref_count = 1;
+	file->size = size;
+	file->offset = 0;
+	return file;
+}
+
+File *open_file_from_inode_num(U32 inode_num) {
+	File *file = NULL;
+	for (U32 i=0; i<SYS_OPEN_FILES_MAX; ++i) {
+		if (inode_num == open_files[i].inode_num) {
+			file = &open_files[i];
+			break;
+		}
+	}
+	return file;
+}
+
+void print_inode(U32 inode_num) {
+	Inode *inode = &inodes[inode_num];
+	printf("inode[%d]: type=%u size=%u num_addrs=%u addrs[0]=%x\n", 
+		inode_num, inode->type, inode->size, inode->num_addrs, inode->addrs[0]);
+}
+
+void path_normalize(char path[PATH_MAX]) {
+	U32 path_len = strlen(path);
+	if (path_len == 0) return;
+	char *ptr = path + path_len - 1;
+	// remove trailing slashes
+	while (ptr != path && *ptr == '/') {
+		*ptr-- = 0;
+	}
+}
+
+void path_copy(char path[PATH_MAX], char *src) {
+    strncpy(path, src, PATH_MAX);
+    path[PATH_MAX - 1] = 0;
+	path_normalize(path);
+}
+
+void path_join_n(char path[PATH_MAX], char *src, int size) {
+	U32 path_len = strlen(path);
+	KERNEL_ASSERT(path_len + size < PATH_MAX, "");
+
+    char *ptr = path + path_len;
+    while (ptr != path && ptr[-1] == '/') {
+        ptr--;
+    }
+	*ptr++ = '/';
+
+    while (*src == '/') {
+        src++;
+		--size;
+    }
+	for (int i=0; i<size; ++i) {
+		*ptr++ = src[i];
+	}	
+	*ptr++ = 0;
+	path_normalize(path);
+}
+
+void path_join(char path[PATH_MAX], char *src) {
+	U32 src_len = strlen(src);
+	KERNEL_ASSERT(src_len < PATH_MAX, "");
+	path_join_n(path, src, (int)src_len);
+}
+
+
+int syscall_open(char *path, U32 flags, U32 mode) {
+	Inode *root_inode = &inodes[ROOT_INODE_NUM];
+
+	print_inode(ROOT_INODE_NUM);
+
+	char root_path[PATH_MAX] = {0};
+	root_path[0] = '/';
+
+	for (U32 i=0; i < root_inode->num_addrs; ++i) {
+		U8 buf[DISK_BLOCK_SIZE];
+
+		U32 block_id = root_inode->addrs[i] / DISK_BLOCK_SIZE;
+		printf("reading block %u\n", block_id);
+		if (!disk_read_block(buf, block_id)) {
+			// TODO: handle fail
+		}
+
+		// iterate the DirLink entries in root_inode
+		printf("reading entries in root\n");
+		for (U32 offset=0; offset < root_inode->size; ) {
+			DirLink *entry = (DirLink*)(buf + offset);
+			KERNEL_ASSERT(entry->inode_num != 0, "syscall open: invalid inode %u", entry->inode_num);
+
+			// TODO: this is stupid do something better
+			if (entry->name[0] == '.') {
+				U32 total_entry_size = align_up(sizeof(entry) + entry->name_size_with_padding, 4);
+				offset += total_entry_size;
+				continue;
+			}
+
+			Inode *entry_inode = &inodes[entry->inode_num];
+
+			char cur_path[PATH_MAX] = {0};
+			path_copy(cur_path, root_path);
+			// NOTE: must use path_join_n because entry->name is not necessarily null terminated
+			path_join_n(cur_path, entry->name, entry->name_size); 
+			printf("cur_path = %s, entry = %s\n", cur_path, entry->name);
+
+			if (0 == strcmp(path, cur_path)) {
+				File *file = open_file_from_inode_num(entry->inode_num);
+
+				if (!file) {
+					file = append_open_file(entry->inode_num, entry_inode->size);
+					if (!file) {
+						printf("Error: failed to open %s: kernel already has max files open\n");
+						// TODO: set errno or something
+						return -1;
+					}
+				}
+
+				int fd = proc_append_fd(file);
+				if (fd < 0) {
+					printf("Error: failed to open %s: proc %d already has max file descriptors\n", path, current_proc->pid);
+					// TODO: set errno or something
+				}
+				return fd;
+			}
+
+			U32 total_entry_size = align_up(sizeof(entry) + entry->name_size_with_padding, 4);
+			offset += total_entry_size;
+		}
+	}
+
+	return -1;
+}
+
 // a3 -> syscall_num
 // a0, a1, a2 -> arguments
 // put return value in a0
@@ -816,111 +1009,93 @@ void handle_syscall(TrapFrame *f) {
 			f->a0 = old_heap_end;
 			break;
 		}
-		case SYSCALL_READFILE: {
-			char *filename = (char*)f->a0;
-			U8 *buf = (U8*)f->a1;
-			U32 buf_len = (U32)f->a2;
 
-			f->a0 = 0; // default to zero bytes read
-					
-			U32 status_reg = READ_CSR(sstatus);
-			WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
+		case SYSCALL_OPEN: {
+			char *path = (char*)f->a0;
+			U32 flags = f->a1;
+			U32 mode = f->a2;
+			f->a0 = syscall_open(path, flags, mode);
 
-			// find file by name
-			File *file = NULL;
-			for (int i=0; i<FILES_MAX; ++i) {
-				if (0 == strcmp(filename, files[i].name)) {
-					file = &files[i];
-					break;
-				}
-			}
-
-			if (file && file->in_use) {
-				if (buf_len < file->size) {
-					printf("error: readfile: buffer %x with len %u not big enough for file %s with size %u\n", 
-						(U32)buf, buf_len, file->name, file->size);
-				} else {
-					memcpy(buf, file->data, file->size);
-					f->a0 = file->size;
-				}
-			} else {
-				printf("file not found: %s\n", filename);
-			}
-
-			WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
-
+			printf("end syscall open\n");
 			break;
 		}
+		// case SYSCALL_READFILE: {
+			// char *filename = (char*)f->a0;
+			// U8 *buf = (U8*)f->a1;
+			// U32 buf_len = (U32)f->a2;
 
-		case SYSCALL_WRITEFILE: {
-			char *filename = (char*)f->a0;
-			U8 *buf = (U8*)f->a1;
-			U32 buf_len = (U32)f->a2;
-
-			f->a0 = 0; // default to zero bytes written
+			// f->a0 = 0; // default to zero bytes read
 					
-			U32 status_reg = READ_CSR(sstatus);
-			WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
+			// U32 status_reg = READ_CSR(sstatus);
+			// WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
 
-			// find file by name
-			File *file = NULL;
-			for (int i=0; i<FILES_MAX; ++i) {
-				if (0 == strcmp(filename, files[i].name)) {
-					file = &files[i];
-					break;
-				}
-			}
+			// // find file by name
+			// File *file = NULL;
+			// for (int i=0; i<FILES_MAX; ++i) {
+				// if (0 == strcmp(filename, files[i].name)) {
+					// file = &files[i];
+					// break;
+				// }
+			// }
 
-			if (file && file->in_use) {
-				if (buf_len > file->size) {
-					printf("error: writefile: file %s has size %u, but tried to write buffer %x with len %u\n",
-						file->name, file->size, (U32)buf, buf_len);
-				} else {
-					file->size = buf_len;
-					memcpy(file->data, buf, buf_len);
-					f->a0 = buf_len;
-				}
-			} else {
-				printf("file not found: %s\n", filename);
-			}
+			// if (file && file->in_use) {
+				// if (buf_len < file->size) {
+					// printf("error: readfile: buffer %x with len %u not big enough for file %s with size %u\n", 
+						// (U32)buf, buf_len, file->name, file->size);
+				// } else {
+					// memcpy(buf, file->data, file->size);
+					// f->a0 = file->size;
+				// }
+			// } else {
+				// printf("file not found: %s\n", filename);
+			// }
 
-			WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
+			// WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
 
-			break;
-		}
+			// break;
+		// }
+
+		// case SYSCALL_WRITEFILE: {
+			// char *filename = (char*)f->a0;
+			// U8 *buf = (U8*)f->a1;
+			// U32 buf_len = (U32)f->a2;
+
+			// f->a0 = 0; // default to zero bytes written
+					
+			// U32 status_reg = READ_CSR(sstatus);
+			// WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
+
+			// // find file by name
+			// File *file = NULL;
+			// for (int i=0; i<FILES_MAX; ++i) {
+				// if (0 == strcmp(filename, files[i].name)) {
+					// file = &files[i];
+					// break;
+				// }
+			// }
+
+			// if (file && file->in_use) {
+				// if (buf_len > file->size) {
+					// printf("error: writefile: file %s has size %u, but tried to write buffer %x with len %u\n",
+						// file->name, file->size, (U32)buf, buf_len);
+				// } else {
+					// file->size = buf_len;
+					// memcpy(file->data, buf, buf_len);
+					// f->a0 = buf_len;
+				// }
+			// } else {
+				// printf("file not found: %s\n", filename);
+			// }
+
+			// WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
+
+			// break;
+		// }
 
 		default:
 			PANIC("unimplemented syscall: %u\n", f->a3);
 			break;
 	}
-}
-
-void proc_back_vaddr_with_physical_page(Vaddr vaddr) {
-	// currently assuming this is a process accessing memory in its heap for the first time
-	KERNEL_ASSERT(vaddr >= current_proc->heap_start && vaddr < current_proc->heap_end);
-
-	Vaddr page_start = (vaddr % PAGE_SIZE) == 0 ? vaddr : align_up(vaddr, PAGE_SIZE) - PAGE_SIZE;
-	Paddr new_page = alloc_pages(1);
-	map_page(current_proc->page_table, page_start, new_page, PAGE_U|PAGE_R|PAGE_W|PAGE_X);
-}
-
-bool proc_is_first_access(Vaddr vaddr) {
-	// check if level 1 PTE is valid
-	U32 t1_index = (vaddr & VADDR_PAGE_LEVEL1_MASK) >> VADDR_PAGE_LEVEL1_SHIFT;
-	U32 *table1 = current_proc->page_table;
-	if ((table1[t1_index] & PAGE_V) == 0) {
-		return true;
-	} 
-
-	// check if level 0 PTE is valid
-	U32 t0_page_num = (table1[t1_index] & PTE_PAGE_NUMBER_MASK) >> PTE_PAGE_NUMBER_SHIFT;
-	U32 *table0 = (U32*)(t0_page_num * PAGE_SIZE);
-	U32 t0_index = (vaddr & VADDR_PAGE_LEVEL0_MASK) >> VADDR_PAGE_LEVEL0_SHIFT;
-	if ((table0[t0_index] & PAGE_V) == 0) {
-		return true;
-	}
-
-	return false;
 }
 
 void handle_trap(TrapFrame *f) {

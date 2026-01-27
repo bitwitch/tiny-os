@@ -38,15 +38,11 @@ enum {
 };
 
 typedef struct {
-	U32 inode_num;
-	// TODO: some kind of lock for synchronization
-	bool valid;
-
-	// copy of on disk inode
-	U8 type;
-	U8 num_addrs;
-	U32 size_in_bytes;
+	U32 type;
+	U32 num_addrs;
+	U32 size;
 	U32 addrs[INODE_NUM_DIRECT_POINTERS];
+	U8 pad[48];
 } Inode;
 
 typedef struct {
@@ -59,14 +55,17 @@ typedef struct {
 } Superblock;
 
 typedef struct {
-	bool in_use;
+	U32 inode_num;
+	U16 name_size_with_padding; // size of name plus any empty space, this is used so that new files can reuse old space
+	U16 name_size;  // including null-terminator
+	char name[];
+} DirLink;
+
+typedef struct {
+	U32 inode_num;
+	U32 ref_count;
 	U32 size;
-	U8 *data;
-	char name[PATH_MAX];
+	U32 offset;
 } File;
 
-struct {
-	// TODO: a lock here
-	File files[SYS_OPEN_FILES_MAX];
-} file_table;
 

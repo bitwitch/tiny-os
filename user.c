@@ -23,13 +23,29 @@ int getchar(void) {
 	return syscall(SYSCALL_GETCHAR, 0, 0, 0);
 }
 
-U32 readfile(char *filename, U8 *buf, U32 buf_len) {
-	return (U32)syscall(SYSCALL_READFILE, (int)filename, (int)buf, (int)buf_len);
+int open(char *path, U32 flags, U32 mode) {
+	return syscall(SYSCALL_OPEN, (U32)path, flags, mode);
 }
 
-U32 writefile(char *filename, U8 *buf, U32 buf_len) {
-	return (U32)syscall(SYSCALL_WRITEFILE, (int)filename, (int)buf, (int)buf_len);
-}
+// DirHandle *open_dir(char *path) {
+	// U32 fd = (U32)syscall(SYSCALL_OPEN, path, 0, 0);
+
+	// // TODO: check if path is a valid dir
+
+	// DirHandle *handle = malloc(sizeof(*handle));
+	// *handle = (DirHandle){
+		// .fd = fd,
+		// .offset = 0
+	// }
+
+	// return handle;
+// }
+
+// DirEntry read_dir(DirHandle *handle) {
+	// // get the next entry in the directory pointed to by handle	
+	// //
+// }
+
 
 
 
@@ -125,7 +141,7 @@ U8 *malloc_find_fit(U32 size) {
 }
 
 // split the block into an allocated block of size and a free block of remainder size
-void malloc_allocate_block(U8 *bp, U32 size) {
+void malloc_place_block(U8 *bp, U32 size) {
 	U32 old_size = BLK_GET_SIZE(bp);
 	HDR_WRITE(bp, size, 1);
 	bp = NEXT_BLKP(bp);
@@ -163,11 +179,12 @@ void *malloc(U32 size) {
 		bp = new_block;
 	} 
 
-	malloc_allocate_block(bp, size);
+	malloc_place_block(bp, size);
 
 	dump_heap();
 	return bp;
 }
+
 
 void free(void *p) {
 	if (!p) return;
@@ -176,13 +193,33 @@ void free(void *p) {
 	// TODO(shaw): coalesce free blocks
 }
 
-// void *realloc(void *ptr, U32 new_size) {
-	// if (!malloc_state.initialized) {
-		// malloc_init();
-	// }
+void *realloc(void *ptr, U32 new_size) {
+	if (!ptr) {
+		return malloc(new_size);
+	}
 
-// }
+	U32 new_block_size = align_up(new_size + HEADER_SIZE, 4);
 
+	if (!malloc_state.initialized) {
+		malloc_init(new_block_size);
+	}
+	
+	U8 *bp = ptr;
+
+	U32 old_block_size = BLK_GET_SIZE(ptr);
+	if (new_block_size > old_block_size) {
+		bp = malloc(new_size);
+		memcpy(bp, ptr, old_block_size - HEADER_SIZE);
+		HDR_WRITE(ptr, old_block_size, 0);
+
+	}  else if (new_block_size < old_block_size) {
+		HDR_WRITE(bp, new_block_size, 1);
+		bp = NEXT_BLKP(bp);
+		HDR_WRITE(bp, old_block_size - new_block_size, 0);
+	}
+
+	return bp;
+}
 
 
 __attribute__((noreturn)) 
