@@ -9,7 +9,7 @@ void exit(int code);
 
 #define assert(cond) \
 	do { \
-		if(!cond) { \
+		if(!(cond)) { \
 			printf("%s:%d assertion failed: \"%s\"\n", __FILE__, __LINE__, #cond); \
 			exit(1); \
 		} \

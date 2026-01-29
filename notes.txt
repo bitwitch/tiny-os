@@ -41,6 +41,28 @@ TODO:
 Some important sections are marked with #-, (i.e. #- Section Title),
 this is done so you can use your text editor easily search for them.
 
+
+2026-01-29
+--------------------------------------------------------------------------------
+The usage patterns of an arena allocator would be useful in the kernel. For
+example in syscall open, I need to read disk blocks into memory, process them,
+and then throw the memory away (in the future probably cache them). I was
+thinking of having a api where you arena_get(), to find and unused arena or
+create a new one. Then you call arena_release(), to mark the arena as no longer
+in use. This way allocated memory doesn't have to be freed unless the system is
+under memory pressure, in which case the kernel can choose to free unused
+arenas. This is similar to the slab allocator.
+
+
+
+
+2026-01-28
+--------------------------------------------------------------------------------
+Slab Allocator
+https://www.kernel.org/doc/gorman/html/understand/understand011.html
+https://people.eecs.berkeley.edu/~kubitron/courses/cs194-24-S14/hand-outs/bonwick_slab.pdf
+
+
 2026-01-26
 --------------------------------------------------------------------------------
 Files

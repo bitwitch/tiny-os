@@ -23,9 +23,10 @@ data region size:    16MB (4096 blocks)
 #define INODE_NUM_DIRECT_POINTERS  12
 #define SYS_OPEN_FILES_MAX         128
 #define PROC_OPEN_FILES_MAX        32
-#define DISK_DIR_ENTRY_MIN         12
+#define DISK_DIR_ENTRY_NAME_MIN    12
 #define DISK_BLOCK_SIZE            KILOBYTES(4)
 #define SUPERBLOCK_START           KILOBYTES(4)
+#define INODE_TABLE_START          KILOBYTES(16)
 #define FILE_SIZE_MAX              (INODE_NUM_DIRECT_POINTERS * DISK_BLOCK_SIZE)
 #define FILES_MAX                  DISK_BLOCK_SIZE
 #define VSFS_MAGIC                 0x73667376   // "vsfs"
@@ -42,7 +43,7 @@ typedef struct {
 	U32 num_addrs;
 	U32 size;
 	U32 addrs[INODE_NUM_DIRECT_POINTERS];
-	U8 pad[48];
+	U8 unused[48];
 } Inode;
 
 typedef struct {
@@ -59,7 +60,7 @@ typedef struct {
 	U16 name_size_with_padding; // size of name plus any empty space, this is used so that new files can reuse old space
 	U16 name_size;  // including null-terminator
 	char name[];
-} DirLink;
+} DiskDirEntry;
 
 typedef struct {
 	U32 inode_num;

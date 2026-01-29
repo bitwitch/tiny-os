@@ -8,6 +8,8 @@
 #define is_aligned __builtin_is_aligned
 #define offsetof   __builtin_offsetof
 
+#define UINT32_MAX 4294967295
+
 #define true  1
 #define false 0
 #define NULL  ((void *) 0)
