@@ -40,6 +40,15 @@ enum {
 	SYSCALL_OPEN      = 6,
 };
 
+// syscall open flags
+#define O_READ_ONLY    (1 << 0)
+#define O_WRITE_ONLY   (1 << 1)
+#define O_READ_WRITE   (1 << 2)
+#define O_CREATE       (1 << 3)
+#define O_DIRECTORY    (1 << 4)
+#define O_APPEND       (1 << 5)
+#define O_TRUNCATE     (1 << 6)
+
 void *memset(void *buf, U8 val, U32 count);
 void *memcpy(void *dest, void *src, U32 count);
 void *memmove(void *dest,  void *src, U32 count);

@@ -395,7 +395,7 @@ void free_pages(Paddr paddr, U32 n) {
 	freed->num_contiguous_pages = n;
 	freed->prev = NULL;
 	freed->next = free_page_list;
-	free_page_list->prev = freed;
+	if (free_page_list) free_page_list->prev = freed;
 	free_page_list = freed;
 }
 
@@ -610,7 +610,7 @@ int proc_append_fd(File *file) {
 }
 
 // adds a new File to open file table and returns a pointer to it
-File *append_open_file(U32 inode_num, U32 size) {
+File *append_open_file(U32 inode_num, U32 flags) {
 	if (num_open_files >= SYS_OPEN_FILES_MAX) {
 		return NULL;
 	}
@@ -618,8 +618,8 @@ File *append_open_file(U32 inode_num, U32 size) {
 	File *file = &open_files[num_open_files++];
 	file->inode_num = inode_num;
 	file->ref_count = 1;
-	file->size = size;
 	file->offset = 0;
+	file->flags = flags;
 	return file;
 }
 
@@ -636,7 +636,19 @@ File *open_file_from_inode_num(U32 inode_num) {
 	return file;
 }
 
-void print_inode(U32 inode_num) {
+void print_inode(Inode *inode) {
+	int inode_num = 0;
+	for (int i=0; i<FILES_MAX; ++i) {
+		if (&inodes[i] == inode) {
+			inode_num = i;
+			break;
+		}
+	}
+	printf("inode[%d]: type=%u size=%u num_addrs=%u addrs[0]=%x\n", 
+		inode_num, inode->type, inode->size, inode->num_addrs, inode->addrs[0]);
+}
+
+void print_inode_from_num(U32 inode_num) {
 	Inode *inode = &inodes[inode_num];
 	printf("inode[%d]: type=%u size=%u num_addrs=%u addrs[0]=%x\n", 
 		inode_num, inode->type, inode->size, inode->num_addrs, inode->addrs[0]);
@@ -743,6 +755,8 @@ U32 find_inode_on_disk(char *target_path) {
 		InodeList *item = inode_list_pop_front(subdirs);
 		Inode *subdir_inode = item->inode;
 
+		print_inode(subdir_inode);
+
 		// read entire directory entry on disk
 		//
 		// TODO(shaw): it would be better to have a nicer memory allocator that the kernel can use
@@ -762,7 +776,6 @@ U32 find_inode_on_disk(char *target_path) {
 		}
 
 		// iterate the DiskDirEntry entries in subdir_inode
-		printf("reading entries in subdir\n");
 		for (U32 offset=0; offset < subdir_inode->size; ) {
 			DiskDirEntry *entry = (DiskDirEntry*)(buf + offset);
 
@@ -796,7 +809,6 @@ complete:
 
 
 int syscall_open(char *path, U32 flags, U32 mode) {
-	(void)flags;
 	(void)mode;
 	// TODO: handle flags and mode
 
@@ -808,7 +820,7 @@ int syscall_open(char *path, U32 flags, U32 mode) {
 		File *file = open_file_from_inode_num(inode_num);
 
 		if (!file) {
-			file = append_open_file(inode_num, inode->size);
+			file = append_open_file(inode_num, flags);
 			if (!file) {
 				printf("Error: failed to open %s: kernel already has max files open\n");
 				// TODO: set errno or something

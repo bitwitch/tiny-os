@@ -65,8 +65,8 @@ typedef struct {
 typedef struct {
 	U32 inode_num;
 	U32 ref_count;
-	U32 size;
 	U32 offset;
+	U32 flags;
 } File;
 
 

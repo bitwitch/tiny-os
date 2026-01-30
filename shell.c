@@ -202,12 +202,8 @@ void main2(void) {
 }
 
 void main(void) {
-	int fd = open("/code/hello.c", 0, 0);
-	// int fd = open("/notice.txt", 0, 0);
+	char *path = "/code/hello.c";
+	int fd = open(path, O_READ_ONLY, 0);
 	printf("fd = %d\n", fd);
-
-	// U8 buf[256];
-	// U32 size = ARRAY_LEN(buf);
-	// int bytes_read = read(fd, buf, size);
 }
 
