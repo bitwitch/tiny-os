@@ -4,6 +4,7 @@
 
 // kernel "modules" split into other files just for code organization
 #include "slab.c"
+#include "arena.c"
 
 U32 virtio_reg_read32(U32 offset) {
     return *((volatile U32 *) (VIRTIO_BLK_PADDR + offset));
@@ -746,10 +747,11 @@ U32 find_inode_on_disk(char *target_path) {
 	U32 result = 0;
 
 	Inode *root_inode = &inodes[ROOT_INODE_NUM];
-	// TODO: create subdirs list
 	
 	InodeList *subdirs = inode_list_create();
 	inode_list_append(subdirs, root_inode);
+
+	Arena *arena = karena_get();
 
 	while (!inode_list_empty(subdirs)) {
 		InodeList *item = inode_list_pop_front(subdirs);
@@ -758,19 +760,16 @@ U32 find_inode_on_disk(char *target_path) {
 		print_inode(subdir_inode);
 
 		// read entire directory entry on disk
-		//
-		// TODO(shaw): it would be better to have a nicer memory allocator that the kernel can use
-		// I want to use an arena allocator here but arena allocators rely on virtual memory, and currently
-		// the kernel itself is not using virtual memory
+		// TODO: cache blocks read from disk
 		U32 num_pages = align_up(subdir_inode->num_addrs * DISK_BLOCK_SIZE, PAGE_SIZE) / PAGE_SIZE;
-		U8 *buf = (U8*)alloc_pages(num_pages);
+		U32 pos = karena_pos(arena);
+		U8 *buf = karena_push(arena, num_pages * PAGE_SIZE);
 
 		for (U32 i=0; i < subdir_inode->num_addrs; ++i) {
 			U32 block_id = subdir_inode->addrs[i] / DISK_BLOCK_SIZE;
 			printf("reading block %u\n", block_id);
 			if (!disk_read_block(buf + i * DISK_BLOCK_SIZE, block_id)) {
 				printf("%s:%d failed to read disk block %d\n", __FILE__, __LINE__, block_id);
-				free_pages((Paddr)buf, num_pages);
 				goto complete;
 			}
 		}
@@ -799,10 +798,11 @@ U32 find_inode_on_disk(char *target_path) {
 			offset += total_entry_size;
 		}
 
-		free_pages((Paddr)buf, num_pages);
+		karena_set_pos(arena, pos);
 	}
 
 complete:
+	karena_release(arena);
 	inode_list_destroy(subdirs);
 	return result;
 }
@@ -816,7 +816,7 @@ int syscall_open(char *path, U32 flags, U32 mode) {
 
 	U32 inode_num = find_inode_on_disk(path);
 	if (inode_num != 0) {
-		Inode *inode = &inodes[inode_num];
+		// Inode *inode = &inodes[inode_num];
 		File *file = open_file_from_inode_num(inode_num);
 
 		if (!file) {

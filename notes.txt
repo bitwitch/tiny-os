@@ -1,5 +1,6 @@
 TODO:
-[ ] add arguments (argc and argv) to main from start()
+[ ] implement a block cache that stores disk blocks by id
+
 [ ] Go over full boot process
 
 [ ] implement an actual filesystem, maybe start with vsfs from OSTEP
@@ -40,6 +41,52 @@ TODO:
 
 Some important sections are marked with #-, (i.e. #- Section Title),
 this is done so you can use your text editor easily search for them.
+
+
+
+2026-01-30
+--------------------------------------------------------------------------------
+
+                            First 8 Pages
++-----------------------------------------------------------------+
+|                                              |                  |
+|                    Data                      |       Arena      |
+|                                              |                  |
++-----------------------------------------------------------------+
+
+                           Next 8 Pages
++-----------------------------------------------------------------+
+|                                                    |            |
+|                    Data                            | ArenaChunk |
+|                                                    |            |
++-----------------------------------------------------------------+
+
+<-------------------------- 8 Pages ------------------------------>
+
+I made an arena allocator for the kernel that relies only on the page allocator
+to obtain memory. The idea is that when a user (i.e. kernel developer) wants to
+use an arena they call get_arena(), which just scans a linked list for an unused
+arena or creates a new one. An arena allocates 8 pages at a time and stores the
+Arena struct in the first 8 page allocation at the end (see image above). Then
+when pushing items onto the arena, if the arena needs to grow it allocates 8
+more pages and places an ArenaChunk struct at the end of the new allocation. An
+ArenaChunk just contains a pointer to a next ArenaChunk to make a linked list.
+The Arena struct has a pointer to the first chunk.
+
+
+I don't like that having the first allocation store the Arena struct means it
+doesn't match the rest of the allocations and complicates the code for growing
+the arena and popping the arena back to a previous position. 
+I can think of three possible solutions to this:
+
+1. Reserve space in every chunk for an Arena struct but just put an ArenaChunk
+   struct in every one after the first, wasting a little space at the end
+
+2. Store all metadata (Arena and ArenaChunk) in separate pages obtained from the
+   page allocator
+
+3. Use the slab allocator to obtain memory for the Arena and ArenaChunk structs
+
 
 
 2026-01-29
