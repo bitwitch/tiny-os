@@ -816,7 +816,6 @@ int syscall_open(char *path, U32 flags, U32 mode) {
 
 	U32 inode_num = find_inode_on_disk(path);
 	if (inode_num != 0) {
-		// Inode *inode = &inodes[inode_num];
 		File *file = open_file_from_inode_num(inode_num);
 
 		if (!file) {
@@ -837,6 +836,60 @@ int syscall_open(char *path, U32 flags, U32 mode) {
 	}
 
 	return fd;
+}
+
+int syscall_read(int fd, char *buf, U32 size, bool is_user_buf) {
+	if (size == 0) return 0;
+
+	KERNEL_ASSERT(fd >= 0, "");
+	File *file = current_proc->descriptor_table[fd];
+	if (!file) {
+		printf("Error: syscall_read: fd %d is not associated with an open file\n");
+		return 0;
+	}
+	
+	Inode *inode = &inodes[file->inode_num];
+	if (!inode) {
+		printf("Error: syscall_read: invalid inode (%u) referenced in file pointed at by fd %d\n", file->inode_num, fd);
+		return 0;
+	}
+
+	U32 bytes_read = 0;
+
+	U32 max_blocks = MIN(inode->num_addrs, (align_up(size, DISK_BLOCK_SIZE) / DISK_BLOCK_SIZE));
+
+	// TODO(shaw): cache disk blocks read
+	Arena *arena = karena_get();
+	char *tmp = karena_push(arena, max_blocks * DISK_BLOCK_SIZE);
+
+	for (U32 i=0; i<max_blocks; ++i) {
+		U32 block_id = inode->addrs[i] / DISK_BLOCK_SIZE;
+		if (!disk_read_block(tmp + i * DISK_BLOCK_SIZE, block_id)) {
+			printf("Error: syscall_read: failed to read disk block %d\n", block_id);
+			goto fail;
+		}
+	}
+
+	U32 bytes_to_copy = MIN(size, inode->size);
+	U32 offset = MAX(0, file->offset);
+	if (offset + bytes_to_copy > inode->size) {
+		bytes_to_copy = inode->size - offset;
+	}
+
+	if (is_user_buf) {
+		U32 status_reg = READ_CSR(sstatus);
+		WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
+		memcpy(buf, tmp + offset, bytes_to_copy);
+		WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
+	} else {
+		memcpy(buf, tmp + offset, bytes_to_copy);
+	}
+	bytes_read = bytes_to_copy;
+
+fail:
+	karena_release(arena);
+	file->offset += bytes_read;
+	return bytes_read;
 }
 
 // a3 -> syscall_num
@@ -870,7 +923,6 @@ void handle_syscall(TrapFrame *f) {
 			f->a0 = old_heap_end;
 			break;
 		}
-
 		case SYSCALL_OPEN: {
 			char *user_path = (char*)f->a0;
 
@@ -885,82 +937,15 @@ void handle_syscall(TrapFrame *f) {
 			U32 mode = f->a2;
 			f->a0 = syscall_open(path, flags, mode);
 
-			printf("end syscall open\n");
 			break;
 		}
-		// case SYSCALL_READFILE: {
-			// char *filename = (char*)f->a0;
-			// U8 *buf = (U8*)f->a1;
-			// U32 buf_len = (U32)f->a2;
-
-			// f->a0 = 0; // default to zero bytes read
-					
-			// U32 status_reg = READ_CSR(sstatus);
-			// WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
-
-			// // find file by name
-			// File *file = NULL;
-			// for (int i=0; i<FILES_MAX; ++i) {
-				// if (0 == strcmp(filename, files[i].name)) {
-					// file = &files[i];
-					// break;
-				// }
-			// }
-
-			// if (file && file->in_use) {
-				// if (buf_len < file->size) {
-					// printf("error: readfile: buffer %x with len %u not big enough for file %s with size %u\n", 
-						// (U32)buf, buf_len, file->name, file->size);
-				// } else {
-					// memcpy(buf, file->data, file->size);
-					// f->a0 = file->size;
-				// }
-			// } else {
-				// printf("file not found: %s\n", filename);
-			// }
-
-			// WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
-
-			// break;
-		// }
-
-		// case SYSCALL_WRITEFILE: {
-			// char *filename = (char*)f->a0;
-			// U8 *buf = (U8*)f->a1;
-			// U32 buf_len = (U32)f->a2;
-
-			// f->a0 = 0; // default to zero bytes written
-					
-			// U32 status_reg = READ_CSR(sstatus);
-			// WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
-
-			// // find file by name
-			// File *file = NULL;
-			// for (int i=0; i<FILES_MAX; ++i) {
-				// if (0 == strcmp(filename, files[i].name)) {
-					// file = &files[i];
-					// break;
-				// }
-			// }
-
-			// if (file && file->in_use) {
-				// if (buf_len > file->size) {
-					// printf("error: writefile: file %s has size %u, but tried to write buffer %x with len %u\n",
-						// file->name, file->size, (U32)buf, buf_len);
-				// } else {
-					// file->size = buf_len;
-					// memcpy(file->data, buf, buf_len);
-					// f->a0 = buf_len;
-				// }
-			// } else {
-				// printf("file not found: %s\n", filename);
-			// }
-
-			// WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
-
-			// break;
-		// }
-
+		case SYSCALL_READ: {
+			int fd = (int)f->a0;
+			char *buf = (char*)f->a1;
+			U32 size = f->a2;
+			f->a0 = syscall_read(fd, buf, size, true);
+			break;
+		}
 		default:
 			PANIC("unimplemented syscall: %u\n", f->a3);
 			break;

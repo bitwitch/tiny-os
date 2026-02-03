@@ -38,6 +38,9 @@ enum {
 	SYSCALL_EXIT      = 3,
 	SYSCALL_GETPAGES  = 5,
 	SYSCALL_OPEN      = 6,
+	SYSCALL_CLOSE     = 7,
+	SYSCALL_READ      = 8,
+	SYSCALL_WRITE     = 9,
 };
 
 // syscall open flags

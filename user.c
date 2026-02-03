@@ -27,6 +27,12 @@ int open(char *path, U32 flags, U32 mode) {
 	return syscall(SYSCALL_OPEN, (U32)path, flags, mode);
 }
 
+int read(int fd, void *buf, U32 size) {
+	return syscall(SYSCALL_READ, (U32)fd, (U32)buf, size);
+}
+
+
+
 // DirHandle *open_dir(char *path) {
 	// U32 fd = (U32)syscall(SYSCALL_OPEN, path, 0, 0);
 

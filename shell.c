@@ -204,6 +204,20 @@ void main2(void) {
 void main(void) {
 	char *path = "/code/hello.c";
 	int fd = open(path, O_READ_ONLY, 0);
-	printf("fd = %d\n", fd);
+	printf("open: fd=%d\n", fd);
+	if (fd == -1) {
+		printf("failed to open file %s\n", path);
+		exit(1);
+	}
+	U8 buf[1024];
+	U32 bytes_read = read(fd, buf, sizeof(buf));
+	printf("read %u bytes from %s\n", bytes_read, path);
+	if (bytes_read > 0) {
+		printf("----------------------------------------------\n");
+		printf("%s\n", buf);
+		printf("----------------------------------------------\n");
+	}
+
+
 }
 
