@@ -250,4 +250,6 @@ static U32 num_open_files;
 static Superblock superblock;
 static Inode inodes[FILES_MAX];
 
+static int errno;
+
 Paddr alloc_pages(U32 n);

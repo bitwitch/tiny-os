@@ -3,10 +3,10 @@ void *malloc(U32 size);
 void *realloc(void* ptr, U32 size);
 void free(void *p);
 
+void exit(int code);
+
 int open(char *path, U32 flags, U32 mode);
 int read(int fd, void *buf, U32 size);
-
-void exit(int code);
 
 #define assert(cond) \
 	do { \
@@ -16,3 +16,4 @@ void exit(int code);
 		} \
 	} while(0)
 
+extern int errno;

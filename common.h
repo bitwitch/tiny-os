@@ -52,6 +52,25 @@ enum {
 #define O_APPEND       (1 << 5)
 #define O_TRUNCATE     (1 << 6)
 
+// error types
+enum {
+	EACCES = 1,
+	EBADF,
+	EDQUOT,
+	EEXIST,
+	EFAULT,
+	EINTR,
+	EINVAL,
+	EIO,
+	EISDIR,
+	EMFILE,
+	ENFILE,
+	ENOENT,
+	ENOTDIR,
+};
+
+
+
 void *memset(void *buf, U8 val, U32 count);
 void *memcpy(void *dest, void *src, U32 count);
 void *memmove(void *dest,  void *src, U32 count);

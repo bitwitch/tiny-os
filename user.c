@@ -2,6 +2,7 @@
 #include "user.h"
 
 extern char __stack_top[];
+int errno;
 
 S32 syscall(S32 syscall_num, S32 arg0, S32 arg1, S32 arg2) {
 	register int a0 __asm__("a0") = arg0;
@@ -24,13 +25,22 @@ int getchar(void) {
 }
 
 int open(char *path, U32 flags, U32 mode) {
-	return syscall(SYSCALL_OPEN, (U32)path, flags, mode);
+	int result = syscall(SYSCALL_OPEN, (U32)path, flags, mode);
+	if (result < 0) {
+		errno = -result;
+		return -1;
+	}
+	return result;
 }
 
 int read(int fd, void *buf, U32 size) {
-	return syscall(SYSCALL_READ, (U32)fd, (U32)buf, size);
+	int result = syscall(SYSCALL_READ, (U32)fd, (U32)buf, size);
+	if (result < 0) {
+		errno = -result;
+		return -1;
+	}
+	return result;
 }
-
 
 
 // DirHandle *open_dir(char *path) {

@@ -822,16 +822,14 @@ int syscall_open(char *path, U32 flags, U32 mode) {
 			file = append_open_file(inode_num, flags);
 			if (!file) {
 				printf("Error: failed to open %s: kernel already has max files open\n");
-				// TODO: set errno or something
-				return -1;
+				return -ENFILE;
 			}
 		}
 
 		fd = proc_append_fd(file);
 		if (fd < 0) {
 			printf("Error: failed to open %s: proc %d already has max file descriptors\n", path, current_proc->pid);
-			// TODO: set errno or something
-			return -1;
+			return -EMFILE;
 		}
 	}
 
@@ -845,13 +843,18 @@ int syscall_read(int fd, char *buf, U32 size, bool is_user_buf) {
 	File *file = current_proc->descriptor_table[fd];
 	if (!file) {
 		printf("Error: syscall_read: fd %d is not associated with an open file\n");
-		return 0;
+		return -EBADF;
 	}
 	
 	Inode *inode = &inodes[file->inode_num];
 	if (!inode) {
 		printf("Error: syscall_read: invalid inode (%u) referenced in file pointed at by fd %d\n", file->inode_num, fd);
-		return 0;
+		return -EBADF;
+	}
+
+	if (inode->type == INODE_DIR) {
+		printf("Error: syscall_read: cannot read from a directory: fd=%d\n", fd);
+		return -EISDIR;
 	}
 
 	U32 bytes_read = 0;
@@ -866,6 +869,7 @@ int syscall_read(int fd, char *buf, U32 size, bool is_user_buf) {
 		U32 block_id = inode->addrs[i] / DISK_BLOCK_SIZE;
 		if (!disk_read_block(tmp + i * DISK_BLOCK_SIZE, block_id)) {
 			printf("Error: syscall_read: failed to read disk block %d\n", block_id);
+			bytes_read = -EIO;
 			goto fail;
 		}
 	}

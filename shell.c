@@ -210,8 +210,8 @@ void main(void) {
 		exit(1);
 	}
 	U8 buf[1024];
-	U32 bytes_read = read(fd, buf, sizeof(buf));
-	printf("read %u bytes from %s\n", bytes_read, path);
+	int bytes_read = read(fd, buf, sizeof(buf));
+	printf("read %d bytes from %s\n", bytes_read, path);
 	if (bytes_read > 0) {
 		printf("----------------------------------------------\n");
 		printf("%s\n", buf);
