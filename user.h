@@ -7,6 +7,7 @@ void exit(int code);
 
 int open(char *path, U32 flags, U32 mode);
 int read(int fd, void *buf, U32 size);
+int cwd(char *buf, U32 size);
 
 #define assert(cond) \
 	do { \

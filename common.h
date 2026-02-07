@@ -17,6 +17,7 @@
 #define KILOBYTES(n) (n * 1024)
 #define MEGABYTES(n) (n * 1024 * 1024)
 #define PAGE_SIZE    KILOBYTES(4)
+#define PATH_MAX     256
 
 #define MIN(a, b)    ((a) < (b) ? (a) : (b))
 #define MAX(a, b)    ((a) > (b) ? (a) : (b))
@@ -32,15 +33,17 @@ typedef U32 Paddr;                 // physical address
 typedef U32 Vaddr;                 // virtual address
 
 enum {
-	SYSCALL_INVALID   = 0, 
-	SYSCALL_PUTCHAR   = 1,
-	SYSCALL_GETCHAR   = 2,
-	SYSCALL_EXIT      = 3,
-	SYSCALL_GETPAGES  = 5,
-	SYSCALL_OPEN      = 6,
-	SYSCALL_CLOSE     = 7,
-	SYSCALL_READ      = 8,
-	SYSCALL_WRITE     = 9,
+	SYSCALL_INVALID = 0,
+	SYSCALL_PUTCHAR,
+	SYSCALL_GETCHAR,
+	SYSCALL_EXIT,
+	SYSCALL_GETPAGES,
+	SYSCALL_OPEN,
+	SYSCALL_CLOSE,
+	SYSCALL_READ,
+	SYSCALL_WRITE,
+	SYSCALL_CWD,
+	SYSCALL_CHDIR,
 };
 
 // syscall open flags

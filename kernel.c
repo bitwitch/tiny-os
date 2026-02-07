@@ -5,6 +5,7 @@
 // kernel "modules" split into other files just for code organization
 #include "slab.c"
 #include "arena.c"
+#include "dcache.c"
 
 U32 virtio_reg_read32(U32 offset) {
     return *((volatile U32 *) (VIRTIO_BLK_PADDR + offset));
@@ -254,6 +255,19 @@ void filesystem_init(void) {
 		}
 	}
 
+	
+	// initialize the root DirEntry in dcache
+	Inode *root_inode = &inodes[ROOT_INODE_NUM];
+	if (!root_inode) {
+		PANIC("failed to initialize filesystem: failed to locate root inode");
+	}
+	DirEntry *root_dir_entry = kmalloc(sizeof(DirEntry));
+	memset(root_dir_entry, 0, sizeof(DirEntry));
+	root_dir_entry->inode = root_inode;
+	root_dir_entry->ref_count = UINT32_MAX;
+	root_dir_entry->name[0] = '/';
+	dcache_put(&dcache, root_dir_entry);
+
 	printf("filesystem initialized\n");
 }
 
@@ -488,8 +502,13 @@ Process *create_process(void *image, U32 image_size) {
 	p->sp = (Vaddr)sp;
 	p->heap_start = USER_BASE + offset;
 	p->heap_end = p->heap_start;
+	p->working_directory = dcache_get(&dcache, NULL, "/");
 	p->page_table = page_table;
 	p->num_fds = 3; // reserve 3 fds for stdin, stdout, stderr
+
+	if (!p->working_directory) {
+		PANIC("failed to create process, root dir entry not found in dcache");
+	}
 
 	return p;
 }
@@ -672,6 +691,7 @@ void path_copy(char path[PATH_MAX], char *src) {
 }
 
 void path_join_n(char path[PATH_MAX], char *src, int size) {
+	if (size == 0) return;
 	U32 path_len = strlen(path);
 	KERNEL_ASSERT(path_len + size < PATH_MAX, "");
 
@@ -697,6 +717,53 @@ void path_join(char path[PATH_MAX], char *src) {
 	KERNEL_ASSERT(src_len < PATH_MAX, "");
 	path_join_n(path, src, (int)src_len);
 }
+
+char *path_next_component(char path[PATH_MAX], char comp[PATH_MAX]) {
+	while (*path == '/') ++path;
+	char *start = path;
+	U32 len = 0;
+	while (*path && *path != '/') {
+		++path;
+		++len;
+	}
+	while (*path == '/') ++path;
+
+	if (len == 0) return 0;
+
+	len = MIN(len, PATH_MAX - 1);
+	memcpy(comp, start, len);
+	comp[len] = 0;
+
+	return path;
+}
+
+void path_reverse(char path[PATH_MAX], char *src) {
+	int src_len = strlen(src);
+	KERNEL_ASSERT(src_len < PATH_MAX, "");
+
+	// clear path & simultaneously handle when trying to reverse root path "/"
+	path[0] = '/'; 
+	path[1] = 0;  
+
+	char *p = &src[src_len - 1];
+
+	while (src_len > 0) {
+		while (src_len > 0 && *p == '/') {
+			--p;
+			--src_len;
+		}
+		char *start = p;
+		U32 len = 0;
+		while (src_len > 0 && *p != '/') {
+			start = p;
+			--p;
+			--src_len;
+			++len;
+		}
+		path_join_n(path, start, len);
+	}
+}
+
 
 typedef struct InodeList InodeList;
 struct InodeList {
@@ -807,6 +874,12 @@ complete:
 	return result;
 }
 
+void copy_to_from_userspace(void *dst, void *src, U32 size) {
+	U32 status_reg = READ_CSR(sstatus);
+	WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
+	memcpy(dst, src, size);
+	WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
+}
 
 int syscall_open(char *path, U32 flags, U32 mode) {
 	(void)mode;
@@ -881,10 +954,7 @@ int syscall_read(int fd, char *buf, U32 size, bool is_user_buf) {
 	}
 
 	if (is_user_buf) {
-		U32 status_reg = READ_CSR(sstatus);
-		WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
-		memcpy(buf, tmp + offset, bytes_to_copy);
-		WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
+		copy_to_from_userspace(buf, tmp + offset, bytes_to_copy);
 	} else {
 		memcpy(buf, tmp + offset, bytes_to_copy);
 	}
@@ -894,6 +964,31 @@ fail:
 	karena_release(arena);
 	file->offset += bytes_read;
 	return bytes_read;
+}
+
+int syscall_cwd(char *user_buf, U32 size) {
+	DirEntry *cwd = current_proc->working_directory;
+	if (cwd) {
+		char buf[PATH_MAX] = {0};
+		while (cwd) {
+			path_join(buf, cwd->name);
+			if (!cwd->parent && 0 != strcmp(cwd->name, "/")) {
+				printf("Error: syscall_cwd: failed to build path for cwd: direntry %s has no parent in dcache\n", cwd->name);
+				return -1;
+			}
+			cwd = cwd->parent;
+		}
+
+		char path[PATH_MAX];
+		path_reverse(path, buf);
+
+		U32 len = MIN(size, strlen(path)+1);
+		copy_to_from_userspace(user_buf, path, len);
+		return 0;
+	} else {
+		printf("Error: syscall_cwd: process has no valid working directory\n");
+		return -1;
+	}
 }
 
 // a3 -> syscall_num
@@ -948,6 +1043,12 @@ void handle_syscall(TrapFrame *f) {
 			char *buf = (char*)f->a1;
 			U32 size = f->a2;
 			f->a0 = syscall_read(fd, buf, size, true);
+			break;
+		}
+		case SYSCALL_CWD: {
+			char *user_buf = (char*)f->a0;
+			U32 size = f->a1;
+			f->a0 = syscall_cwd(user_buf, size);
 			break;
 		}
 		default:

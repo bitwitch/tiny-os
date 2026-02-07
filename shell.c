@@ -31,39 +31,48 @@ typedef struct {
 } Builtin;
 
 char *env_path;
-char *working_directory = "/";
 
 void eval_cd(Command cmd) {
 	printf("%s:", cmd.program);
 	for (U32 i=0; i<cmd.args.len; ++i) {
 		printf(" %s", cmd.args.items[i]);
 	}
+	printf("\n");
 }
 
-// void eval_dir(Command cmd) {
-	// // if arg passed, read that dir
-	// // otherwise read working dir
+void eval_dir(Command cmd) {
+	printf("%s:", cmd.program);
+	for (U32 i=0; i<cmd.args.len; ++i) {
+		printf(" %s", cmd.args.items[i]);
+	}
+	printf("\n");
+	// if arg passed, read that dir
+	// otherwise read working dir
 	
 	// DirHandle *handle = open_dir(working_directory);
 	// for (DirEntry *entry = read_dir(handle), entry, entry = read_dir(handle)) {
 		// printf("%s %u\n", entry->name, entry->size);
 	// }
 
-
-
-// }
+}
 
 void eval_pwd(Command cmd) {
 	(void)cmd;
-	printf("%s\n", working_directory);
+	char path[PATH_MAX];
+	int rc = cwd(path, PATH_MAX);
+	if (rc < 0) {
+		// TODO: print error message based on errno
+		printf("failed to print working directory\n");
+	}
+	printf("%s\n", path);
 }
 
-// Builtin builtins[] = {
-	// { .name = "cd",  .evaluate = eval_cd },
-	// { .name = "dir", .evaluate = eval_dir },
-	// { .name = "pwd", .evaluate = eval_pwd },
-// };
-// int num_builtins = ARRAY_LEN(builtins);
+Builtin builtins[] = {
+	{ .name = "cd",  .evaluate = eval_cd },
+	{ .name = "dir", .evaluate = eval_dir },
+	{ .name = "pwd", .evaluate = eval_pwd },
+};
+int num_builtins = ARRAY_LEN(builtins);
 
 
 // NOTE: parse modifies cmdline
@@ -93,21 +102,22 @@ Command parse(char *cmdline) {
 	return cmd;
 }
 
-// void evaluate(Command cmd) {
-	// bool is_builtin = false;
-	// for (int i=0; i<num_builtins; ++i) {
+void evaluate(Command cmd) {
+	bool is_builtin = false;
+	for (int i=0; i<num_builtins; ++i) {
 
-		// // TODO: string interning for direct pointer comparisons
+		// TODO: string interning for direct pointer comparisons
 
-		// if (0 == strcmp(cmd.program, builtins[i].name)) {
-			// is_builtin = true;
-			// builtins[i].evaluate(cmd);
-		// }
-	// }
+		if (0 == strcmp(cmd.program, builtins[i].name)) {
+			is_builtin = true;
+			builtins[i].evaluate(cmd);
+		}
+	}
 
-	// if (!is_builtin) {
-		// // search through PATH env variable for first matching program
-	// }
+	if (!is_builtin) {
+		// search through PATH env variable for first matching program
+	}
+}
 
 
 	// // if (0 == strcmp(cmdline, "hello")) {
@@ -151,8 +161,26 @@ Command parse(char *cmdline) {
 		// builtins[i].name = str_intern(builtins[i].name);
 	// }
 // }
+//
+void test_read_file(void) {
+	char *path = "/code/hello.c";
+	int fd = open(path, O_READ_ONLY, 0);
+	printf("open: fd=%d\n", fd);
+	if (fd == -1) {
+		printf("failed to open file %s\n", path);
+		exit(1);
+	}
+	U8 buf[1024];
+	int bytes_read = read(fd, buf, sizeof(buf));
+	printf("read %d bytes from %s\n", bytes_read, path);
+	if (bytes_read > 0) {
+		printf("----------------------------------------------\n");
+		printf("%s\n", buf);
+		printf("----------------------------------------------\n");
+	}
+}
 
-void main2(void) {
+void main(void) {
 	char cmdline[MAX_CMDLINE];
 	Command cmd;
 
@@ -190,34 +218,11 @@ void main2(void) {
 
 		if (i < MAX_CMDLINE) {
 			cmd = parse(cmdline);
-
-			for (U32 i=0; i<cmd.args.len; ++i) {
-				printf(", %s", cmd.args.items[i]);
-			}
-			// evaluate(cmd);
+			evaluate(cmd);
 		} else {
 			printf("command too long, max length is %d characters\n", MAX_CMDLINE);
 		}
 	}
 }
 
-void main(void) {
-	char *path = "/code/hello.c";
-	int fd = open(path, O_READ_ONLY, 0);
-	printf("open: fd=%d\n", fd);
-	if (fd == -1) {
-		printf("failed to open file %s\n", path);
-		exit(1);
-	}
-	U8 buf[1024];
-	int bytes_read = read(fd, buf, sizeof(buf));
-	printf("read %d bytes from %s\n", bytes_read, path);
-	if (bytes_read > 0) {
-		printf("----------------------------------------------\n");
-		printf("%s\n", buf);
-		printf("----------------------------------------------\n");
-	}
-
-
-}
 

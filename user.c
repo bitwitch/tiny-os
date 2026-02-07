@@ -43,6 +43,15 @@ int read(int fd, void *buf, U32 size) {
 }
 
 
+int cwd(char *buf, U32 size) {
+	int result = syscall(SYSCALL_CWD, (U32)buf, size, 0);
+	if (result < 0) {
+		// errno = -result;
+		return -1;
+	}
+	return result;
+}
+
 // DirHandle *open_dir(char *path) {
 	// U32 fd = (U32)syscall(SYSCALL_OPEN, path, 0, 0);
 

@@ -18,7 +18,6 @@ data region size:    16MB (4096 blocks)
 0KB     4KB     8KB      12KB     16KB        272KB                              16656KB
 */
 
-#define PATH_MAX                   256
 #define ROOT_INODE_NUM             1    // zero is reserved for a non-existent file
 #define INODE_NUM_DIRECT_POINTERS  12
 #define SYS_OPEN_FILES_MAX         128
@@ -62,11 +61,19 @@ typedef struct {
 	char name[];
 } DiskDirEntry;
 
+typedef struct DirEntry DirEntry;
+struct DirEntry {
+	Inode *inode;
+	DirEntry *parent;
+	DirEntry *next;      // for dcache
+	U32 ref_count;
+	char name[PATH_MAX];
+};
+
 typedef struct {
 	U32 inode_num;
 	U32 ref_count;
 	U32 offset;
 	U32 flags;
 } File;
-
 

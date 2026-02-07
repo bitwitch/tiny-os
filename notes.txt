@@ -1,12 +1,15 @@
 TODO:
-[ ] implement a block cache that stores disk blocks by id
+
+[ ] make a slab pool for DirEntries for dcache
+
+[ ] block cache that stores disk blocks by id
 
 [ ] Go over full boot process
 
 [ ] implement an actual filesystem, maybe start with vsfs from OSTEP
 	[X] create a filesystem image in vsfs format
 	[X] read the metadata into data structures
-	[ ] read from files
+	[X] read from files
   [ ] write to files
 
 
@@ -31,6 +34,8 @@ TODO:
     - this will also require managing the memory for all the requests
 
 
+[X] hash table
+[X] dentry cache
 [X] userspace assert
 [X] rewrite memmove in non stupid way
 	[X] remove exit() in kernel

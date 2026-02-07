@@ -2,6 +2,7 @@
 // it is split out just for code organization.
 
 #define PROCS_MAX   8
+#define DCACHE_MAX  32
 
 // SATP register (Supervisor Address Translation and Protection)
 // |  31  |     30 - 22   |                 21 - 0                      |
@@ -177,11 +178,27 @@ typedef struct {
 	Vaddr sp;         // stack pointer
 	Vaddr heap_start;
 	Vaddr heap_end;
+	DirEntry *working_directory;
 	U32 *page_table;  // pointer to 1st level page table
 	U8 stack[8192]; 
 	File *descriptor_table[SYS_OPEN_FILES_MAX];
 	U32 num_fds;
 } Process;
+
+typedef struct LRU_Node LRU_Node;
+struct LRU_Node {
+	void *data;
+	LRU_Node *next;
+	LRU_Node *prev;
+};
+
+typedef struct {
+	LRU_Node *head;
+	LRU_Node *tail;
+	U32 len;
+	U32 cap; 
+} LRU;
+
 
 enum {
 	SCAUSE_INST_ADDR_MISALIGNED = 0,
@@ -253,3 +270,4 @@ static Inode inodes[FILES_MAX];
 static int errno;
 
 Paddr alloc_pages(U32 n);
+char *path_next_component(char path[PATH_MAX], char comp[PATH_MAX]);
