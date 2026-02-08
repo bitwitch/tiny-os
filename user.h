@@ -6,6 +6,7 @@ typedef struct {
 	U32 buf_size;
 	U32 buf_pos; // current position inside userspace buffer
 	U32 offset;  // directory position in the kernel / filesystem
+	bool end_reached; // gets set to true when all entries in the dir have been read into the buffer
 } DIR;
 
 void *malloc(U32 size);

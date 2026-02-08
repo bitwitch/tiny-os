@@ -1,5 +1,11 @@
 TODO:
 
+[ ] open_dir
+
+[ ] read_dir
+
+[ ] close syscall
+
 [ ] make a slab pool for DirEntries for dcache
 
 [ ] block cache that stores disk blocks by id

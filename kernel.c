@@ -254,7 +254,6 @@ void filesystem_init(void) {
 			PANIC("failed to initialize filesystem: failed to read inode table");
 		}
 	}
-
 	
 	// initialize the root DcacheEntry in dcache
 	Inode *root_inode = &inodes[ROOT_INODE_NUM];
@@ -823,7 +822,7 @@ U32 find_inode_on_disk(char *target_path) {
 		InodeList *item = inode_list_pop_front(subdirs);
 		Inode *subdir_inode = item->inode;
 
-		print_inode(subdir_inode);
+		// print_inode(subdir_inode);
 
 		// read entire directory entry on disk
 		// TODO: cache blocks read from disk
@@ -833,7 +832,6 @@ U32 find_inode_on_disk(char *target_path) {
 
 		for (U32 i=0; i < subdir_inode->num_addrs; ++i) {
 			U32 block_id = subdir_inode->addrs[i] / DISK_BLOCK_SIZE;
-			printf("reading block %u\n", block_id);
 			if (!disk_read_block(buf + i * DISK_BLOCK_SIZE, block_id)) {
 				printf("%s:%d failed to read disk block %d\n", __FILE__, __LINE__, block_id);
 				goto complete;
@@ -844,7 +842,7 @@ U32 find_inode_on_disk(char *target_path) {
 		for (U32 offset=0; offset < subdir_inode->size; ) {
 			DiskDirEntry *entry = (DiskDirEntry*)(buf + offset);
 
-			printf("\toffset=%u path=%s inode=%u\n", offset, entry->name, entry->inode_num);
+			// printf("\toffset=%u path=%s inode=%u\n", offset, entry->name, entry->inode_num);
 
 			KERNEL_ASSERT(entry->inode_num != 0, "syscall open: invalid inode %u", entry->inode_num);
 
@@ -998,7 +996,10 @@ int syscall_cwd(char *user_buf, U32 size) {
 }
 
 int syscall_dir_entries(int fd, U8 *user_buf, U32 user_buf_size) {
-	int rc = 0;
+	// TODO: handle EFAULT argument points outside the calling process's address space
+	// TODO: handle EINVAL Result buffer is too small.
+
+	int rc = -1;
 	// see how many entries will fit into user buf
 	// read that many entries from disk
 	// copy buf to userspace
@@ -1037,15 +1038,17 @@ int syscall_dir_entries(int fd, U8 *user_buf, U32 user_buf_size) {
 	}
 
 	U32 entry_index = 0;
-	for (U32 offset=0; offset < disk_buf_size; ) {
+	for (U32 offset=0; offset < disk_buf_size && file_offset_start + offset < inode->size; ) {
 		DiskDirEntry *disk_entry = (DiskDirEntry*)(disk_buf + offset);
 		// printf("\toffset=%u path=%s inode=%u\n", offset, disk_entry->name, disk_entry->inode_num);
 		KERNEL_ASSERT(disk_entry->inode_num != 0, "syscall dir_entries: invalid inode %u", disk_entry->inode_num);
 
+		Inode *entry_inode = &inodes[disk_entry->inode_num];
+
 		DirEntry *entry = &dir_entries[entry_index];
 		entry->inode_num = disk_entry->inode_num;
-		entry->type = inode->type;
-		entry->size = inode->size;
+		entry->type = entry_inode->type;
+		entry->size = entry_inode->size;
 		KERNEL_ASSERT(disk_entry->name_size < PATH_MAX, 
 			"syscall_dir_entries: entry %s name is more than PATH_MAX=%u characters", disk_entry->name, PATH_MAX);
 		memcpy(entry->name, disk_entry->name, disk_entry->name_size);
@@ -1063,7 +1066,15 @@ int syscall_dir_entries(int fd, U8 *user_buf, U32 user_buf_size) {
 	}
 
 	U32 size = entry_index * sizeof(dir_entries[0]);
-	copy_to_from_userspace(user_buf, dir_entries, size);
+	if (size > 0) {
+		copy_to_from_userspace(user_buf, dir_entries, size);
+		rc = size;
+	}
+
+	if (file->offset >= inode->size) {
+		// end of directory reached
+		rc =  0;
+	}
 
 fail:
 	karena_release(arena);

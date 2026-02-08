@@ -31,14 +31,8 @@ data region size:    16MB (4096 blocks)
 #define VSFS_MAGIC                 0x73667376   // "vsfs"
 
 
-enum {
-	INODE_NONE,
-	INODE_DIR,
-	INODE_FILE,
-};
-
 typedef struct {
-	U32 type;
+	U32 type;        // INODE_DIR, INODE_FILE
 	U32 num_addrs;
 	U32 size;
 	U32 addrs[INODE_NUM_DIRECT_POINTERS];

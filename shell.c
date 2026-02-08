@@ -49,9 +49,12 @@ void eval_dir(Command cmd) {
 	}
 
 	DIR *d = open_dir(path);
-	printf("d=%x\n", d);
 	for (DirEntry *entry = read_dir(d); entry; entry = read_dir(d)) {
-		printf("%s %u\n", entry->name, entry->size);
+		if (entry->type == INODE_DIR) {
+			printf("d\t\t%s\n", entry->name);
+		} else {
+			printf("f\t%u\t%s\n", entry->size, entry->name);
+		}
 	}
 }
 
@@ -115,6 +118,7 @@ void evaluate(Command cmd) {
 
 	if (!is_builtin) {
 		// search through PATH env variable for first matching program
+		assert(0 && "not implemented");
 	}
 }
 

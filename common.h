@@ -47,6 +47,12 @@ enum {
 	SYSCALL_DIR_ENTRIES,
 };
 
+enum {
+	INODE_NONE = 0,
+	INODE_DIR,
+	INODE_FILE,
+};
+
 // syscall open flags
 #define O_READ_ONLY    (1 << 0)
 #define O_WRITE_ONLY   (1 << 1)
