@@ -60,7 +60,7 @@ typedef struct DcacheEntry DcacheEntry;
 typedef struct {
 	Inode *inode;
 	DcacheEntry *dentry;
-	U32 ref_count;
+	S32 ref_count;
 	U32 offset;
 	U32 flags;
 } File;

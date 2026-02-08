@@ -263,7 +263,7 @@ void filesystem_init(void) {
 
 	DcacheEntry *root_dir_entry = dcache_create_entry(root_inode, NULL, "/");
 	KERNEL_ASSERT(root_dir_entry != NULL, "failed to create dcache entry for filesystem root");
-	root_dir_entry->ref_count = UINT32_MAX;
+	root_dir_entry->ref_count = INT32_MAX;
 	dcache_put(&dcache, root_dir_entry);
 
 	printf("filesystem initialized\n");

@@ -9,6 +9,7 @@
 #define offsetof   __builtin_offsetof
 
 #define UINT32_MAX 4294967295
+#define INT32_MAX  2147483647
 
 #define true  1
 #define false 0

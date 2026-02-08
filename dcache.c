@@ -4,7 +4,7 @@ struct DcacheEntry {
 	Inode *inode;
 	DcacheEntry *parent;
 	DcacheEntry *next;
-	U32 ref_count;
+	S32 ref_count;
 	char name[PATH_MAX];
 };
 
