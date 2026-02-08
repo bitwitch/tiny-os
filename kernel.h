@@ -172,13 +172,22 @@ typedef enum {
 	PROC_EXITED,
 } ProcState;
 
+typedef struct DcacheEntry DcacheEntry;
+struct DcacheEntry {
+	Inode *inode;
+	DcacheEntry *parent;
+	DcacheEntry *next;      // for dcache
+	U32 ref_count;
+	char name[PATH_MAX];
+};
+
 typedef struct {
 	int pid;
 	ProcState state;
 	Vaddr sp;         // stack pointer
 	Vaddr heap_start;
 	Vaddr heap_end;
-	DirEntry *working_directory;
+	DcacheEntry *working_directory;
 	U32 *page_table;  // pointer to 1st level page table
 	U8 stack[8192]; 
 	File *descriptor_table[SYS_OPEN_FILES_MAX];

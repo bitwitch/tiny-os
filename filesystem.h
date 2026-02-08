@@ -61,15 +61,6 @@ typedef struct {
 	char name[];
 } DiskDirEntry;
 
-typedef struct DirEntry DirEntry;
-struct DirEntry {
-	Inode *inode;
-	DirEntry *parent;
-	DirEntry *next;      // for dcache
-	U32 ref_count;
-	char name[PATH_MAX];
-};
-
 typedef struct {
 	U32 inode_num;
 	U32 ref_count;

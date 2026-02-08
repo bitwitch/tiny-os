@@ -256,13 +256,13 @@ void filesystem_init(void) {
 	}
 
 	
-	// initialize the root DirEntry in dcache
+	// initialize the root DcacheEntry in dcache
 	Inode *root_inode = &inodes[ROOT_INODE_NUM];
 	if (!root_inode) {
 		PANIC("failed to initialize filesystem: failed to locate root inode");
 	}
-	DirEntry *root_dir_entry = kmalloc(sizeof(DirEntry));
-	memset(root_dir_entry, 0, sizeof(DirEntry));
+	DcacheEntry *root_dir_entry = kmalloc(sizeof(DcacheEntry));
+	memset(root_dir_entry, 0, sizeof(DcacheEntry));
 	root_dir_entry->inode = root_inode;
 	root_dir_entry->ref_count = UINT32_MAX;
 	root_dir_entry->name[0] = '/';
@@ -764,7 +764,6 @@ void path_reverse(char path[PATH_MAX], char *src) {
 	}
 }
 
-
 typedef struct InodeList InodeList;
 struct InodeList {
 	InodeList *next;
@@ -887,6 +886,8 @@ int syscall_open(char *path, U32 flags, U32 mode) {
 
 	int fd = -1;
 
+	// TODO: check dcache before going to disk
+
 	U32 inode_num = find_inode_on_disk(path);
 	if (inode_num != 0) {
 		File *file = open_file_from_inode_num(inode_num);
@@ -909,27 +910,7 @@ int syscall_open(char *path, U32 flags, U32 mode) {
 	return fd;
 }
 
-int syscall_read(int fd, char *buf, U32 size, bool is_user_buf) {
-	if (size == 0) return 0;
-
-	KERNEL_ASSERT(fd >= 0, "");
-	File *file = current_proc->descriptor_table[fd];
-	if (!file) {
-		printf("Error: syscall_read: fd %d is not associated with an open file\n");
-		return -EBADF;
-	}
-	
-	Inode *inode = &inodes[file->inode_num];
-	if (!inode) {
-		printf("Error: syscall_read: invalid inode (%u) referenced in file pointed at by fd %d\n", file->inode_num, fd);
-		return -EBADF;
-	}
-
-	if (inode->type == INODE_DIR) {
-		printf("Error: syscall_read: cannot read from a directory: fd=%d\n", fd);
-		return -EISDIR;
-	}
-
+int inode_read(Inode *inode, File *file, char *buf, U32 size, bool is_user_buf) {
 	U32 bytes_read = 0;
 
 	U32 max_blocks = MIN(inode->num_addrs, (align_up(size, DISK_BLOCK_SIZE) / DISK_BLOCK_SIZE));
@@ -941,7 +922,7 @@ int syscall_read(int fd, char *buf, U32 size, bool is_user_buf) {
 	for (U32 i=0; i<max_blocks; ++i) {
 		U32 block_id = inode->addrs[i] / DISK_BLOCK_SIZE;
 		if (!disk_read_block(tmp + i * DISK_BLOCK_SIZE, block_id)) {
-			printf("Error: syscall_read: failed to read disk block %d\n", block_id);
+			printf("Error: inode_read: failed to read disk block %d\n", block_id);
 			bytes_read = -EIO;
 			goto fail;
 		}
@@ -966,8 +947,33 @@ fail:
 	return bytes_read;
 }
 
+
+int syscall_read(int fd, char *buf, U32 size, bool is_user_buf) {
+	if (size == 0) return 0;
+
+	KERNEL_ASSERT(fd >= 0, "");
+	File *file = current_proc->descriptor_table[fd];
+	if (!file) {
+		printf("Error: syscall_read: fd %d is not associated with an open file\n");
+		return -EBADF;
+	}
+	
+	Inode *inode = &inodes[file->inode_num];
+	if (!inode) {
+		printf("Error: syscall_read: invalid inode (%u) referenced in file pointed at by fd %d\n", file->inode_num, fd);
+		return -EBADF;
+	}
+
+	if (inode->type == INODE_DIR && (file->flags & O_DIRECTORY) == 0) {
+		printf("Error: syscall_read: attempted to read from a directory that was not opened with the O_DIRECTORY flag: fd=%d\n", fd);
+		return -EISDIR;
+	}
+
+	return inode_read(inode, file, buf, size, is_user_buf);
+}
+
 int syscall_cwd(char *user_buf, U32 size) {
-	DirEntry *cwd = current_proc->working_directory;
+	DcacheEntry *cwd = current_proc->working_directory;
 	if (cwd) {
 		char buf[PATH_MAX] = {0};
 		while (cwd) {
@@ -990,6 +996,80 @@ int syscall_cwd(char *user_buf, U32 size) {
 		return -1;
 	}
 }
+
+int syscall_dir_entries(int fd, U8 *user_buf, U32 user_buf_size) {
+	int rc = 0;
+	// see how many entries will fit into user buf
+	// read that many entries from disk
+	// copy buf to userspace
+	File *file = current_proc->descriptor_table[fd];
+	if (!file) {
+		printf("Error: syscall_dir_entries: fd %d is not associated with an open file\n");
+		return -EBADF;
+	}
+
+	Inode *inode = &inodes[file->inode_num];
+	if (!inode) {
+		printf("Error: syscall_dir_entries: invalid inode (%u) referenced in file pointed at by fd %d\n", file->inode_num, fd);
+		return -EBADF;
+	}
+
+	if ((file->flags & O_DIRECTORY) == 0) {
+		printf("Error: syscall_dir_entries: fd %d was not opened with the O_DIRECTORY flag\n", fd);
+		return -ENOTDIR;
+	}
+
+	// TODO: check dcache first before reading from disk
+
+	U32 max_entries = user_buf_size / sizeof(DirEntry);
+
+	Arena *arena = karena_get();
+	U32 disk_buf_size = max_entries * (sizeof(DiskDirEntry) + PATH_MAX);
+	char *disk_buf = karena_push(arena, disk_buf_size);
+
+	U32 buf_size = max_entries * sizeof(DirEntry);
+	DirEntry *dir_entries = karena_push(arena, buf_size);
+
+	U32 file_offset_start = file->offset;
+	rc = inode_read(inode, file, disk_buf, disk_buf_size, false);
+	if (rc < 0) {
+		goto fail;
+	}
+
+	U32 entry_index = 0;
+	for (U32 offset=0; offset < disk_buf_size; ) {
+		DiskDirEntry *disk_entry = (DiskDirEntry*)(disk_buf + offset);
+		// printf("\toffset=%u path=%s inode=%u\n", offset, disk_entry->name, disk_entry->inode_num);
+		KERNEL_ASSERT(disk_entry->inode_num != 0, "syscall dir_entries: invalid inode %u", disk_entry->inode_num);
+
+		DirEntry *entry = &dir_entries[entry_index];
+		entry->inode_num = disk_entry->inode_num;
+		entry->type = inode->type;
+		entry->size = inode->size;
+		KERNEL_ASSERT(disk_entry->name_size < PATH_MAX, 
+			"syscall_dir_entries: entry %s name is more than PATH_MAX=%u characters", disk_entry->name, PATH_MAX);
+		memcpy(entry->name, disk_entry->name, disk_entry->name_size);
+
+		U32 total_entry_size = align_up(sizeof(*disk_entry) + disk_entry->name_size_with_padding, 4);
+		offset += total_entry_size;
+		entry_index += 1;
+		if (entry_index >= max_entries) {
+			// TODO: this is a @HACK to get around the problem inherent with a difference between DiskDirEntries and DirEntries. 
+			// A user may want to read say 12 dir entries and give a buffer with that size, but because DiskDirEntries have 
+			// variable size, there is no way to know how much of a buffer to allocate ahead of time in order to read from disk. You may read 
+			file->offset = file_offset_start + offset;
+			break;
+		}
+	}
+
+	U32 size = entry_index * sizeof(dir_entries[0]);
+	copy_to_from_userspace(user_buf, dir_entries, size);
+
+fail:
+	karena_release(arena);
+	return rc;
+}
+
 
 // a3 -> syscall_num
 // a0, a1, a2 -> arguments
@@ -1049,6 +1129,13 @@ void handle_syscall(TrapFrame *f) {
 			char *user_buf = (char*)f->a0;
 			U32 size = f->a1;
 			f->a0 = syscall_cwd(user_buf, size);
+			break;
+		}
+		case SYSCALL_DIR_ENTRIES: {
+			int fd = f->a0;
+			U8 *user_buf = (U8*)f->a1;
+			U32 user_buf_size = f->a2;
+			f->a0 = syscall_dir_entries(fd, user_buf, user_buf_size);
 			break;
 		}
 		default:

@@ -44,6 +44,7 @@ enum {
 	SYSCALL_WRITE,
 	SYSCALL_CWD,
 	SYSCALL_CHDIR,
+	SYSCALL_DIR_ENTRIES,
 };
 
 // syscall open flags
@@ -69,9 +70,16 @@ enum {
 	EMFILE,
 	ENFILE,
 	ENOENT,
+	ENOMEM,
 	ENOTDIR,
 };
 
+typedef struct {
+	U32 inode_num;
+	U32 type;
+	U32 size;
+	char name[PATH_MAX];
+} DirEntry;
 
 
 void *memset(void *buf, U8 val, U32 count);

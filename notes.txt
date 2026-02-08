@@ -48,6 +48,15 @@ Some important sections are marked with #-, (i.e. #- Section Title),
 this is done so you can use your text editor easily search for them.
 
 
+2026-02-07
+--------------------------------------------------------------------------------
+Some useful info on dcache in linux:
+https://www.kernel.org/doc/html/latest/filesystems/vfs.html
+
+Implementing dir command in the shell:
+- need a way to open and read directories
+- 
+
 
 2026-01-30
 --------------------------------------------------------------------------------
@@ -89,7 +98,7 @@ I can think of three possible solutions to this:
 
 2. Store all metadata (Arena and ArenaChunk) in separate pages obtained from the
    page allocator
-
+s
 3. Use the slab allocator to obtain memory for the Arena and ArenaChunk structs
 
 

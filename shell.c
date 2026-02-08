@@ -41,19 +41,18 @@ void eval_cd(Command cmd) {
 }
 
 void eval_dir(Command cmd) {
-	printf("%s:", cmd.program);
-	for (U32 i=0; i<cmd.args.len; ++i) {
-		printf(" %s", cmd.args.items[i]);
-	}
-	printf("\n");
 	// if arg passed, read that dir
 	// otherwise read working dir
-	
-	// DirHandle *handle = open_dir(working_directory);
-	// for (DirEntry *entry = read_dir(handle), entry, entry = read_dir(handle)) {
-		// printf("%s %u\n", entry->name, entry->size);
-	// }
+	char *path = ".";
+	if (cmd.args.len > 0) {
+		path = cmd.args.items[0];
+	}
 
+	DIR *d = open_dir(path);
+	printf("d=%x\n", d);
+	for (DirEntry *entry = read_dir(d); entry; entry = read_dir(d)) {
+		printf("%s %u\n", entry->name, entry->size);
+	}
 }
 
 void eval_pwd(Command cmd) {
