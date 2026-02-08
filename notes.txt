@@ -1,5 +1,8 @@
 TODO:
 
+[ ] restructure syscall_dir_entries such that dcache can be utilized, probably
+    means have to read entries one at a time
+
 [ ] open_dir
 
 [ ] read_dir

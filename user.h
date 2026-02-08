@@ -23,6 +23,7 @@ int cwd(char *buf, U32 size);
 
 DIR *open_dir(char *path);
 DirEntry *read_dir(DIR *dir);
+int close_dir(DIR *dir);
 
 #define assert(cond) \
 	do { \

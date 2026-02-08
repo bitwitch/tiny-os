@@ -172,15 +172,6 @@ typedef enum {
 	PROC_EXITED,
 } ProcState;
 
-typedef struct DcacheEntry DcacheEntry;
-struct DcacheEntry {
-	Inode *inode;
-	DcacheEntry *parent;
-	DcacheEntry *next;      // for dcache
-	U32 ref_count;
-	char name[PATH_MAX];
-};
-
 typedef struct {
 	int pid;
 	ProcState state;

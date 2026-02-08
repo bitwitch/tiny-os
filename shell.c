@@ -49,12 +49,19 @@ void eval_dir(Command cmd) {
 	}
 
 	DIR *d = open_dir(path);
+	if (!d) {
+		printf("failed to open directory %s\n", path);
+		return;
+	}
 	for (DirEntry *entry = read_dir(d); entry; entry = read_dir(d)) {
 		if (entry->type == INODE_DIR) {
 			printf("d\t\t%s\n", entry->name);
 		} else {
 			printf("f\t%u\t%s\n", entry->size, entry->name);
 		}
+	}
+	if (close_dir(d) != 0) {
+		printf("failed to close dir\n");
 	}
 }
 

@@ -42,6 +42,10 @@ int read(int fd, void *buf, U32 size) {
 	return syscall(SYSCALL_READ, (S32)fd, (S32)buf, (S32)size);
 }
 
+int close(int fd) {
+	return syscall(SYSCALL_CLOSE, (S32)fd, 0, 0);
+}
+
 int cwd(char *buf, U32 size) {
 	return syscall(SYSCALL_CWD, (S32)buf, (S32)size, 0);
 }
@@ -81,9 +85,12 @@ DIR *open_dir(char *path) {
 	return dir;
 }
 
-void close_dir(DIR *d) {
-	// TODO: call close on fd
-	free(d);
+int close_dir(DIR *d) {
+	int rc = close(d->fd);
+	if (rc == 0) {
+		free(d);
+	}
+	return rc;
 }
 
 DirEntry *read_dir(DIR *dir) {

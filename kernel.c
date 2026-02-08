@@ -260,11 +260,10 @@ void filesystem_init(void) {
 	if (!root_inode) {
 		PANIC("failed to initialize filesystem: failed to locate root inode");
 	}
-	DcacheEntry *root_dir_entry = kmalloc(sizeof(DcacheEntry));
-	memset(root_dir_entry, 0, sizeof(DcacheEntry));
-	root_dir_entry->inode = root_inode;
+
+	DcacheEntry *root_dir_entry = dcache_create_entry(root_inode, NULL, "/");
+	KERNEL_ASSERT(root_dir_entry != NULL, "failed to create dcache entry for filesystem root");
 	root_dir_entry->ref_count = UINT32_MAX;
-	root_dir_entry->name[0] = '/';
 	dcache_put(&dcache, root_dir_entry);
 
 	printf("filesystem initialized\n");
@@ -501,7 +500,7 @@ Process *create_process(void *image, U32 image_size) {
 	p->sp = (Vaddr)sp;
 	p->heap_start = USER_BASE + offset;
 	p->heap_end = p->heap_start;
-	p->working_directory = dcache_get(&dcache, NULL, "/");
+	p->working_directory = dcache_lookup(&dcache, "/");
 	p->page_table = page_table;
 	p->num_fds = 3; // reserve 3 fds for stdin, stdout, stderr
 
@@ -618,24 +617,39 @@ bool proc_is_first_access(Vaddr vaddr) {
 	return false;
 }
 
-int proc_append_fd(File *file) {
+int proc_add_fd(File *file) {
 	if (current_proc->num_fds >= SYS_OPEN_FILES_MAX) {
 		return -1;		
 	}
 
-	int fd = current_proc->num_fds++;
+	// reuse a previously closed fd if available
+	int fd = -1;
+	for (U32 i = 0; i < current_proc->num_fds; ++i) {
+		if (current_proc->descriptor_table[i] == NULL) {
+			fd = i;
+			break;
+		}
+	}
+
+	// append a new one if there are none available
+	if (fd < 0) {
+		fd = current_proc->num_fds++;
+	}
+
 	current_proc->descriptor_table[fd] = file;
+
 	return fd;
 }
 
 // adds a new File to open file table and returns a pointer to it
-File *append_open_file(U32 inode_num, U32 flags) {
+File *append_open_file(Inode *inode, DcacheEntry *dentry, U32 flags) {
 	if (num_open_files >= SYS_OPEN_FILES_MAX) {
 		return NULL;
 	}
 
 	File *file = &open_files[num_open_files++];
-	file->inode_num = inode_num;
+	file->inode = inode;
+	file->dentry = dentry;
 	file->ref_count = 1;
 	file->offset = 0;
 	file->flags = flags;
@@ -644,11 +658,12 @@ File *append_open_file(U32 inode_num, U32 flags) {
 
 // search open file table for inode num
 // returns File * if found or NULL if not
-File *open_file_from_inode_num(U32 inode_num) {
+File *open_file_from_inode(Inode *inode) {
 	File *file = NULL;
 	for (U32 i=0; i<SYS_OPEN_FILES_MAX; ++i) {
-		if (inode_num == open_files[i].inode_num) {
+		if (inode == open_files[i].inode) {
 			file = &open_files[i];
+			file->ref_count += 1;
 			break;
 		}
 	}
@@ -717,6 +732,14 @@ void path_join(char path[PATH_MAX], char *src) {
 	path_join_n(path, src, (int)src_len);
 }
 
+/* 
+copies the first component in path to "comp" and returns a pointer to the start of the next component
+
+EXAMPLE: 
+	char *p = path_next_component("/documents/code/hello.c", comp)
+	p    == "code/hello.c"
+	comp == "documents"
+*/
 char *path_next_component(char path[PATH_MAX], char comp[PATH_MAX]) {
 	while (*path == '/') ++path;
 	char *start = path;
@@ -808,24 +831,21 @@ void inode_list_destroy(InodeList *head) {
 }
 
 
-U32 find_inode_on_disk(char *target_path) {
-	U32 result = 0;
+Inode *find_inode_on_disk(char *path) {
+	Inode *result = 0;
 
-	Inode *root_inode = &inodes[ROOT_INODE_NUM];
-	
-	InodeList *subdirs = inode_list_create();
-	inode_list_append(subdirs, root_inode);
+	// start at root
+	Inode *subdir_inode = &inodes[ROOT_INODE_NUM];
+	DcacheEntry *parent = dcache_lookup(&dcache, "/");
 
 	Arena *arena = karena_get();
+	// /code/hello.c
 
-	while (!inode_list_empty(subdirs)) {
-		InodeList *item = inode_list_pop_front(subdirs);
-		Inode *subdir_inode = item->inode;
-
-		// print_inode(subdir_inode);
+	char comp[PATH_MAX];
+	while ((path = path_next_component(path, comp)) != 0) {
+		// TODO: maybe cache blocks read from disk
 
 		// read entire directory entry on disk
-		// TODO: cache blocks read from disk
 		U32 num_pages = align_up(subdir_inode->num_addrs * DISK_BLOCK_SIZE, PAGE_SIZE) / PAGE_SIZE;
 		U32 pos = karena_pos(arena);
 		U8 *buf = karena_push(arena, num_pages * PAGE_SIZE);
@@ -839,35 +859,38 @@ U32 find_inode_on_disk(char *target_path) {
 		}
 
 		// iterate the DiskDirEntry entries in subdir_inode
+		bool found_component = false;
 		for (U32 offset=0; offset < subdir_inode->size; ) {
-			DiskDirEntry *entry = (DiskDirEntry*)(buf + offset);
+			DiskDirEntry *disk_entry = (DiskDirEntry*)(buf + offset);
 
-			// printf("\toffset=%u path=%s inode=%u\n", offset, entry->name, entry->inode_num);
+			// printf("\toffset=%u path=%s inode=%u\n", offset, disk_entry->name, disk_entry->inode_num);
 
-			KERNEL_ASSERT(entry->inode_num != 0, "syscall open: invalid inode %u", entry->inode_num);
+			KERNEL_ASSERT(disk_entry->inode_num != 0, "syscall open: invalid inode %u", disk_entry->inode_num);
 
-			if (0 == strcmp(target_path, entry->name)) {
-				result = entry->inode_num;
-				goto complete;
-			}
-
-			if (0 != strcmp(entry->name, ".") && 0 != strcmp(entry->name, "..")) {
-				Inode *entry_inode = &inodes[entry->inode_num];
-				if (entry_inode->type == INODE_DIR) {
-					inode_list_append(subdirs, entry_inode);
+			if (0 == strcmp(comp, disk_entry->name)) {
+				Inode *entry_inode = &inodes[disk_entry->inode_num];
+				DcacheEntry *dc_entry = dcache_get(&dcache, parent, disk_entry->name);
+				if (!dc_entry) {
+					dc_entry = dcache_create_entry(entry_inode, parent, disk_entry->name);
+					dcache_put(&dcache, dc_entry);
 				}
+				parent = dc_entry;
+				subdir_inode = entry_inode;
+				found_component = true;
+				break;
 			}
 
-			U32 total_entry_size = align_up(sizeof(*entry) + entry->name_size_with_padding, 4);
+			U32 total_entry_size = align_up(sizeof(*disk_entry) + disk_entry->name_size_with_padding, 4);
 			offset += total_entry_size;
 		}
-
+		if (!found_component) goto complete;
 		karena_set_pos(arena, pos);
 	}
 
+	result = subdir_inode;
+	
 complete:
 	karena_release(arena);
-	inode_list_destroy(subdirs);
 	return result;
 }
 
@@ -884,21 +907,31 @@ int syscall_open(char *path, U32 flags, U32 mode) {
 
 	int fd = -1;
 
-	// TODO: check dcache before going to disk
+	Inode *inode = NULL;
+	DcacheEntry *dentry = dcache_lookup(&dcache, path);
+	if (dentry) {
+		inode = dentry->inode;
+	} else {
+		inode = find_inode_on_disk(path);
+	}
 
-	U32 inode_num = find_inode_on_disk(path);
-	if (inode_num != 0) {
-		File *file = open_file_from_inode_num(inode_num);
+	if (inode != NULL) {
+		if ((flags & O_DIRECTORY) && inode->type != INODE_DIR) {
+			return -ENOTDIR;
+		}
+
+		File *file = open_file_from_inode(inode);
 
 		if (!file) {
-			file = append_open_file(inode_num, flags);
+			if (!dentry) dentry = dcache_lookup(&dcache, path);
+			file = append_open_file(inode, dentry, flags);
 			if (!file) {
 				printf("Error: failed to open %s: kernel already has max files open\n");
 				return -ENFILE;
 			}
 		}
 
-		fd = proc_append_fd(file);
+		fd = proc_add_fd(file);
 		if (fd < 0) {
 			printf("Error: failed to open %s: proc %d already has max file descriptors\n", path, current_proc->pid);
 			return -EMFILE;
@@ -908,8 +941,9 @@ int syscall_open(char *path, U32 flags, U32 mode) {
 	return fd;
 }
 
-int inode_read(Inode *inode, File *file, char *buf, U32 size, bool is_user_buf) {
+int file_read(File *file, char *buf, U32 size, bool is_user_buf) {
 	U32 bytes_read = 0;
+	Inode *inode = file->inode;
 
 	U32 max_blocks = MIN(inode->num_addrs, (align_up(size, DISK_BLOCK_SIZE) / DISK_BLOCK_SIZE));
 
@@ -920,7 +954,7 @@ int inode_read(Inode *inode, File *file, char *buf, U32 size, bool is_user_buf) 
 	for (U32 i=0; i<max_blocks; ++i) {
 		U32 block_id = inode->addrs[i] / DISK_BLOCK_SIZE;
 		if (!disk_read_block(tmp + i * DISK_BLOCK_SIZE, block_id)) {
-			printf("Error: inode_read: failed to read disk block %d\n", block_id);
+			printf("Error: file_read: failed to read disk block %d\n", block_id);
 			bytes_read = -EIO;
 			goto fail;
 		}
@@ -956,18 +990,30 @@ int syscall_read(int fd, char *buf, U32 size, bool is_user_buf) {
 		return -EBADF;
 	}
 	
-	Inode *inode = &inodes[file->inode_num];
-	if (!inode) {
-		printf("Error: syscall_read: invalid inode (%u) referenced in file pointed at by fd %d\n", file->inode_num, fd);
+	if (!file->inode) {
+		printf("Error: syscall_read: invalid inode referenced in file pointed at by fd %d\n", fd);
 		return -EBADF;
 	}
 
-	if (inode->type == INODE_DIR && (file->flags & O_DIRECTORY) == 0) {
+	if (file->inode->type == INODE_DIR && (file->flags & O_DIRECTORY) == 0) {
 		printf("Error: syscall_read: attempted to read from a directory that was not opened with the O_DIRECTORY flag: fd=%d\n", fd);
 		return -EISDIR;
 	}
 
-	return inode_read(inode, file, buf, size, is_user_buf);
+	return file_read(file, buf, size, is_user_buf);
+}
+int syscall_close(int fd) {
+	if (fd < 0) return -EBADF;
+
+	File *file = current_proc->descriptor_table[fd];
+	if (!file) return -EBADF;
+
+	file->ref_count -= 1;
+	if (file->ref_count <= 0) {
+		file->offset = 0;
+	}
+	current_proc->descriptor_table[fd] = NULL;
+	return 0;
 }
 
 int syscall_cwd(char *user_buf, U32 size) {
@@ -1000,18 +1046,14 @@ int syscall_dir_entries(int fd, U8 *user_buf, U32 user_buf_size) {
 	// TODO: handle EINVAL Result buffer is too small.
 
 	int rc = -1;
-	// see how many entries will fit into user buf
-	// read that many entries from disk
-	// copy buf to userspace
 	File *file = current_proc->descriptor_table[fd];
 	if (!file) {
 		printf("Error: syscall_dir_entries: fd %d is not associated with an open file\n");
 		return -EBADF;
 	}
 
-	Inode *inode = &inodes[file->inode_num];
-	if (!inode) {
-		printf("Error: syscall_dir_entries: invalid inode (%u) referenced in file pointed at by fd %d\n", file->inode_num, fd);
+	if (!file->inode) {
+		printf("Error: syscall_dir_entries: invalid inode referenced in file pointed at by fd %d\n", fd);
 		return -EBADF;
 	}
 
@@ -1020,7 +1062,13 @@ int syscall_dir_entries(int fd, U8 *user_buf, U32 user_buf_size) {
 		return -ENOTDIR;
 	}
 
-	// TODO: check dcache first before reading from disk
+	// TODO: ideally would check dcache first before reading from disk
+	// but how can i lookup in the dcache without a path? i only have a fd here
+	// the file has a dentry for dir in which we are looking for the children,
+	// but how do i find the children in dcache without their name aready?
+	// I think this would only work if syscall_dir_entries is restructured to
+	// read one entry at a time, either from disk or from dcache. Currently it
+	// reads large chunks of entries from disk at once.
 
 	U32 max_entries = user_buf_size / sizeof(DirEntry);
 
@@ -1032,13 +1080,13 @@ int syscall_dir_entries(int fd, U8 *user_buf, U32 user_buf_size) {
 	DirEntry *dir_entries = karena_push(arena, buf_size);
 
 	U32 file_offset_start = file->offset;
-	rc = inode_read(inode, file, disk_buf, disk_buf_size, false);
+	rc = file_read(file, disk_buf, disk_buf_size, false);
 	if (rc < 0) {
 		goto fail;
 	}
 
 	U32 entry_index = 0;
-	for (U32 offset=0; offset < disk_buf_size && file_offset_start + offset < inode->size; ) {
+	for (U32 offset=0; offset < disk_buf_size && file_offset_start + offset < file->inode->size; ) {
 		DiskDirEntry *disk_entry = (DiskDirEntry*)(disk_buf + offset);
 		// printf("\toffset=%u path=%s inode=%u\n", offset, disk_entry->name, disk_entry->inode_num);
 		KERNEL_ASSERT(disk_entry->inode_num != 0, "syscall dir_entries: invalid inode %u", disk_entry->inode_num);
@@ -1052,6 +1100,14 @@ int syscall_dir_entries(int fd, U8 *user_buf, U32 user_buf_size) {
 		KERNEL_ASSERT(disk_entry->name_size < PATH_MAX, 
 			"syscall_dir_entries: entry %s name is more than PATH_MAX=%u characters", disk_entry->name, PATH_MAX);
 		memcpy(entry->name, disk_entry->name, disk_entry->name_size);
+
+		if (file->dentry) {
+			DcacheEntry *dentry = dcache_get(&dcache, file->dentry, entry->name);
+			if (!dentry) {
+				dentry = dcache_create_entry(entry_inode, file->dentry, entry->name);
+				dcache_put(&dcache, dentry);
+			}
+		} 
 
 		U32 total_entry_size = align_up(sizeof(*disk_entry) + disk_entry->name_size_with_padding, 4);
 		offset += total_entry_size;
@@ -1071,7 +1127,7 @@ int syscall_dir_entries(int fd, U8 *user_buf, U32 user_buf_size) {
 		rc = size;
 	}
 
-	if (file->offset >= inode->size) {
+	if (file->offset >= file->inode->size) {
 		// end of directory reached
 		rc =  0;
 	}
@@ -1134,6 +1190,11 @@ void handle_syscall(TrapFrame *f) {
 			char *buf = (char*)f->a1;
 			U32 size = f->a2;
 			f->a0 = syscall_read(fd, buf, size, true);
+			break;
+		}
+		case SYSCALL_CLOSE: {
+			int fd = (int)f->a0;
+			f->a0 = syscall_close(fd);
 			break;
 		}
 		case SYSCALL_CWD: {

@@ -323,9 +323,9 @@ U32 traverse_dir(char *host_path, char *out_path_base, U32 parent_inode_num) {
 
 		DirLink link = {0};
 		link.inode_num = child_inode_num;
-		link.name_size = (U32)strlen(path) + 1;
+		link.name_size = (U32)strlen(entry->name) + 1;
 		link.entry_size = align_up(link.name_size, DIR_LINK_ENTRY_MIN);
-		link.name = path;
+		link.name = entry->name;
 		buf_push(dir_links, link);
 	}
 

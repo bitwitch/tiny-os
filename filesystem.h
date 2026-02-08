@@ -55,8 +55,11 @@ typedef struct {
 	char name[];
 } DiskDirEntry;
 
+typedef struct DcacheEntry DcacheEntry;
+
 typedef struct {
-	U32 inode_num;
+	Inode *inode;
+	DcacheEntry *dentry;
 	U32 ref_count;
 	U32 offset;
 	U32 flags;
