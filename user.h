@@ -19,11 +19,12 @@ void exit(int code);
 int open(char *path, U32 flags, U32 mode);
 int read(int fd, void *buf, U32 size);
 int cwd(char *buf, U32 size);
+int chdir(char *path);
 
 
-DIR *open_dir(char *path);
-DirEntry *read_dir(DIR *dir);
-int close_dir(DIR *dir);
+DIR *dir_open(char *path);
+DirEntry *dir_read(DIR *dir);
+int dir_close(DIR *dir);
 
 #define assert(cond) \
 	do { \

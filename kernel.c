@@ -740,6 +740,7 @@ EXAMPLE:
 	p    == "code/hello.c"
 	comp == "documents"
 */
+
 char *path_next_component(char path[PATH_MAX], char comp[PATH_MAX]) {
 	while (*path == '/') ++path;
 	char *start = path;
@@ -786,51 +787,6 @@ void path_reverse(char path[PATH_MAX], char *src) {
 	}
 }
 
-typedef struct InodeList InodeList;
-struct InodeList {
-	InodeList *next;
-	Inode *inode;
-};
-
-InodeList *inode_list_create(void) {
-	InodeList *head = kmalloc(sizeof(InodeList));
-	head->next = NULL;
-	head->inode = NULL;
-	return head;
-}
-
-void inode_list_append(InodeList *head, Inode *inode) {
-	InodeList *new_item = kmalloc(sizeof(InodeList));
-	new_item->inode = inode;
-	new_item->next = NULL;
-
-	InodeList *item;
-	for (item = head; item->next; item = item->next);
-	item->next = new_item;
-}
-
-bool inode_list_empty(InodeList *head) {
-	return head->next == NULL;
-}
-
-InodeList *inode_list_pop_front(InodeList *head) {
-	InodeList *result = head->next;
-	if (result) {
-		head->next = result->next;
-	}
-	return result;
-}
-
-void inode_list_destroy(InodeList *head) {
-	InodeList *item = head;
-	while (item) {
-		InodeList *next = item->next;
-		kfree(item);
-		item = next;
-	}
-}
-
-
 Inode *find_inode_on_disk(char *path) {
 	Inode *result = 0;
 
@@ -839,7 +795,6 @@ Inode *find_inode_on_disk(char *path) {
 	DcacheEntry *parent = dcache_lookup(&dcache, "/");
 
 	Arena *arena = karena_get();
-	// /code/hello.c
 
 	char comp[PATH_MAX];
 	while ((path = path_next_component(path, comp)) != 0) {
@@ -901,11 +856,52 @@ void copy_to_from_userspace(void *dst, void *src, U32 size) {
 	WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
 }
 
-int syscall_open(char *path, U32 flags, U32 mode) {
+void path_copy_to_from_userspace(char dst[PATH_MAX], char src[PATH_MAX]) {
+	U32 status_reg = READ_CSR(sstatus);
+	WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
+	path_copy(dst, src);
+	WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
+}
+
+int proc_cwd(char path[PATH_MAX]) {
+	DcacheEntry *cwd = current_proc->working_directory;
+	if (cwd) {
+		char buf[PATH_MAX] = {0};
+		while (cwd) {
+			path_join(buf, cwd->name);
+			if (!cwd->parent && 0 != strcmp(cwd->name, "/")) {
+				printf("Error: proc_cwd: failed to build path for cwd: direntry %s has no parent in dcache\n", cwd->name);
+				return -1;
+			}
+			cwd = cwd->parent;
+		}
+		path_reverse(path, buf);
+		return 0;
+	} else {
+		printf("Error: proc_cwd: process has no valid working directory\n");
+		return -1;
+	}
+}
+
+// /code/hello.c
+int syscall_open(char path[PATH_MAX], U32 flags, U32 mode) {
 	(void)mode;
 	// TODO: handle flags and mode
 
 	int fd = -1;
+
+	if (path[0] != '/') {
+		char rel_path[PATH_MAX];
+		path_copy(rel_path, path);
+
+		int rc = proc_cwd(path);
+		if (rc < 0) {
+			printf("Error: syscall_open: relative path %s specified, but failed to get process working directory\n");
+			return rc;
+		}
+
+		path_join(path, rel_path);
+	}
 
 	Inode *inode = NULL;
 	DcacheEntry *dentry = dcache_lookup(&dcache, path);
@@ -1002,6 +998,7 @@ int syscall_read(int fd, char *buf, U32 size, bool is_user_buf) {
 
 	return file_read(file, buf, size, is_user_buf);
 }
+
 int syscall_close(int fd) {
 	if (fd < 0) return -EBADF;
 
@@ -1017,28 +1014,13 @@ int syscall_close(int fd) {
 }
 
 int syscall_cwd(char *user_buf, U32 size) {
-	DcacheEntry *cwd = current_proc->working_directory;
-	if (cwd) {
-		char buf[PATH_MAX] = {0};
-		while (cwd) {
-			path_join(buf, cwd->name);
-			if (!cwd->parent && 0 != strcmp(cwd->name, "/")) {
-				printf("Error: syscall_cwd: failed to build path for cwd: direntry %s has no parent in dcache\n", cwd->name);
-				return -1;
-			}
-			cwd = cwd->parent;
-		}
-
-		char path[PATH_MAX];
-		path_reverse(path, buf);
-
+	char path[PATH_MAX];
+	int rc = proc_cwd(path);
+	if (rc == 0) {
 		U32 len = MIN(size, strlen(path)+1);
 		copy_to_from_userspace(user_buf, path, len);
-		return 0;
-	} else {
-		printf("Error: syscall_cwd: process has no valid working directory\n");
-		return -1;
 	}
+	return rc;
 }
 
 int syscall_dir_entries(int fd, U8 *user_buf, U32 user_buf_size) {
@@ -1137,6 +1119,45 @@ fail:
 	return rc;
 }
 
+int syscall_chdir(char path[PATH_MAX]) {
+	int result = -1;
+
+	if (path[0] != '/') {
+		char rel_path[PATH_MAX];
+		path_copy(rel_path, path);
+
+		int rc = proc_cwd(path);
+		if (rc < 0) {
+			printf("Error: syscall_open: relative path %s specified, but failed to get process working directory\n");
+			return rc;
+		}
+
+		path_join(path, rel_path);
+	}
+
+	Inode *inode = NULL;
+	DcacheEntry *dentry = dcache_lookup(&dcache, path);
+	if (dentry) {
+		inode = dentry->inode;
+	} else {
+		inode = find_inode_on_disk(path);
+	}
+
+	if (inode != NULL) {
+		if (inode->type != INODE_DIR) {
+			return -ENOTDIR;
+		}
+		
+		if (!dentry) dentry = dcache_lookup(&dcache, path);
+		if (!dentry) return -ENOENT;
+
+		current_proc->working_directory = dentry;
+		result = 0;
+	}
+
+	return result;
+}
+
 
 // a3 -> syscall_num
 // a0, a1, a2 -> arguments
@@ -1172,12 +1193,8 @@ void handle_syscall(TrapFrame *f) {
 		case SYSCALL_OPEN: {
 			char *user_path = (char*)f->a0;
 
-			// copy path string from userspace memory to kernel memory
-			U32 status_reg = READ_CSR(sstatus);
-			WRITE_CSR(sstatus, status_reg | SSTATUS_SUM);
 			char path[PATH_MAX] = {0};
-			path_copy(path, user_path);
-			WRITE_CSR(sstatus, status_reg & ~SSTATUS_SUM);
+			path_copy_to_from_userspace(path, user_path);
 
 			U32 flags = f->a1;
 			U32 mode = f->a2;
@@ -1201,6 +1218,13 @@ void handle_syscall(TrapFrame *f) {
 			char *user_buf = (char*)f->a0;
 			U32 size = f->a1;
 			f->a0 = syscall_cwd(user_buf, size);
+			break;
+		}
+		case SYSCALL_CHDIR: {
+			char *user_path = (char*)f->a0;
+			char path[PATH_MAX];
+			path_copy_to_from_userspace(path, user_path);
+			f->a0 = syscall_chdir(path);
 			break;
 		}
 		case SYSCALL_DIR_ENTRIES: {

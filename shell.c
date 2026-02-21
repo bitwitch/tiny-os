@@ -32,14 +32,6 @@ typedef struct {
 
 char *env_path;
 
-void eval_cd(Command cmd) {
-	printf("%s:", cmd.program);
-	for (U32 i=0; i<cmd.args.len; ++i) {
-		printf(" %s", cmd.args.items[i]);
-	}
-	printf("\n");
-}
-
 void eval_dir(Command cmd) {
 	// if arg passed, read that dir
 	// otherwise read working dir
@@ -48,19 +40,19 @@ void eval_dir(Command cmd) {
 		path = cmd.args.items[0];
 	}
 
-	DIR *d = open_dir(path);
+	DIR *d = dir_open(path);
 	if (!d) {
 		printf("failed to open directory %s\n", path);
 		return;
 	}
-	for (DirEntry *entry = read_dir(d); entry; entry = read_dir(d)) {
+	for (DirEntry *entry = dir_read(d); entry; entry = dir_read(d)) {
 		if (entry->type == INODE_DIR) {
 			printf("d\t\t%s\n", entry->name);
 		} else {
 			printf("f\t%u\t%s\n", entry->size, entry->name);
 		}
 	}
-	if (close_dir(d) != 0) {
+	if (dir_close(d) != 0) {
 		printf("failed to close dir\n");
 	}
 }
@@ -75,6 +67,20 @@ void eval_pwd(Command cmd) {
 	}
 	printf("%s\n", path);
 }
+
+void eval_cd(Command cmd) {
+	if (cmd.args.len == 0) {
+		eval_pwd(cmd);
+		return;
+	}
+
+	int rc = chdir(cmd.args.items[0]);
+	if (rc < 0) {
+		printf("Error: failed to change to directory to %s\n", cmd.args.items[0]);
+		return;
+	}
+}
+
 
 Builtin builtins[] = {
 	{ .name = "cd",  .evaluate = eval_cd },

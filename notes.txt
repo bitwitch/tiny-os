@@ -1,13 +1,6 @@
 TODO:
-
 [ ] restructure syscall_dir_entries such that dcache can be utilized, probably
     means have to read entries one at a time
-
-[ ] open_dir
-
-[ ] read_dir
-
-[ ] close syscall
 
 [ ] make a slab pool for DirEntries for dcache
 
@@ -22,7 +15,6 @@ TODO:
   [ ] write to files
 
 
-[ ] notion of current directory, and shell commands for navigating filesystem
 
 [ ] actual commandline parsing
 
@@ -43,6 +35,10 @@ TODO:
     - this will also require managing the memory for all the requests
 
 
+[x] notion of current directory, and shell commands for navigating filesystem
+[X] close syscall
+[X] dir_open
+[X] dir_read
 [X] hash table
 [X] dentry cache
 [X] userspace assert
@@ -56,6 +52,25 @@ TODO:
 Some important sections are marked with #-, (i.e. #- Section Title),
 this is done so you can use your text editor easily search for them.
 
+
+
+2026-02-08
+--------------------------------------------------------------------------------
+Implemented since last video:
+	slab allocator & kmalloc
+	arena allocator
+
+	syscall_open
+	syscall_read
+	syscall_dir_entries
+
+	dir_open
+	dir_read
+
+	dcache
+	hash table
+
+	dir shell command
 
 2026-02-07
 --------------------------------------------------------------------------------

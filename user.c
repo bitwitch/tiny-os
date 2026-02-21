@@ -50,6 +50,10 @@ int cwd(char *buf, U32 size) {
 	return syscall(SYSCALL_CWD, (S32)buf, (S32)size, 0);
 }
 
+int chdir(char *path) {
+	return syscall(SYSCALL_CHDIR, (S32)path, 0, 0);
+}
+
 /*
 On  success,  the  number of bytes read is returned.  On end of directory, 0 is returned.  On error, -1 is re‐
 turned, and errno is set appropriately.
@@ -63,7 +67,7 @@ int dir_entries(int fd, void *buf, U32 buf_size) {
 	return syscall(SYSCALL_DIR_ENTRIES, (S32)fd, (S32)buf, (S32)buf_size);
 }
 
-DIR *open_dir(char *path) {
+DIR *dir_open(char *path) {
 	int fd = syscall(SYSCALL_OPEN, (S32)path, O_READ_ONLY | O_DIRECTORY, 0);
 	if (fd < 0) {
 		errno = -fd;
@@ -85,7 +89,7 @@ DIR *open_dir(char *path) {
 	return dir;
 }
 
-int close_dir(DIR *d) {
+int dir_close(DIR *d) {
 	int rc = close(d->fd);
 	if (rc == 0) {
 		free(d);
@@ -93,7 +97,7 @@ int close_dir(DIR *d) {
 	return rc;
 }
 
-DirEntry *read_dir(DIR *dir) {
+DirEntry *dir_read(DIR *dir) {
 	// if you can still read DirEntries from buffer, read the next one
 	// else refill buffer of DirEntries via syscall_dir_entries
 	if (dir->buf_pos >= dir->buf_size && !dir->end_reached) {
