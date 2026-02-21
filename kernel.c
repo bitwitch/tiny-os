@@ -689,8 +689,40 @@ void print_inode_from_num(U32 inode_num) {
 }
 
 void path_normalize(char path[PATH_MAX]) {
-	U32 path_len = strlen(path);
+	U32 path_len = (U32)strlen(path);
 	if (path_len == 0) return;
+
+	if (path[0] == '/') {
+		char *p_cur = path+1;
+		char *p_next = path;
+		char comp[PATH_MAX];
+
+		// handle . and .. in path
+		while ((p_next = path_next_component(p_next, comp)) != NULL) {
+			if (0 == strcmp(comp, ".")) {
+				strncpy(p_cur, p_next, PATH_MAX - (p_next - path));
+				p_next = p_cur;
+			} else if (0 == strcmp(comp, "..")) {
+				if (p_cur - 1 > path) {
+					--p_cur;
+				}
+				while(p_cur[-1] != '/') --p_cur;
+				strncpy(p_cur, p_next, PATH_MAX - (p_next - path));
+				p_next = p_cur;
+			} else {
+				p_cur = p_next;
+			}
+		}
+	}
+
+	// TODO: handle relative paths, currently not handling . and .. for
+	// relative I could try to normalize . and .. in some cases, but for
+	// example if the path leads with a bunch of .. then those have to stay in
+	// the path, you can only step back into dirs you have seen before, it
+	// shouldn't be a big deal anyway, since once the user ultimately builds a
+	// full path by calling path_join, then a full normalization will occur there
+
+	path_len = (U32)strlen(path);
 	char *ptr = path + path_len - 1;
 	// remove trailing slashes
 	while (ptr != path && *ptr == '/') {
