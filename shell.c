@@ -27,6 +27,7 @@ typedef struct {
 
 typedef struct {
 	char *name;
+	char *help_message;
 	void (*evaluate)(Command cmd);
 } Builtin;
 
@@ -109,16 +110,24 @@ void eval_readfile(Command cmd) {
 	putchar('\n');
 }
 
-
+void eval_help(Command cmd);
 
 Builtin builtins[] = {
-	{ .name = "cd",   .evaluate = eval_cd},
-	{ .name = "dir",  .evaluate = eval_dir},
-	{ .name = "pwd",  .evaluate = eval_pwd},
-	{ .name = "rf",   .evaluate = eval_readfile},
+	{ .name = "help", .evaluate = eval_help,     .help_message="list built in shell commands"},
+	{ .name = "cd",   .evaluate = eval_cd,       .help_message="change directory"},
+	{ .name = "dir",  .evaluate = eval_dir,      .help_message="list directory contents" },
+	{ .name = "pwd",  .evaluate = eval_pwd,      .help_message="print working directory"},
+	{ .name = "rf",   .evaluate = eval_readfile, .help_message="read file"},
 };
 int num_builtins = ARRAY_LEN(builtins);
 
+void eval_help(Command cmd) {
+	(void)cmd;
+	printf("Commands:\n");
+	for (int i=0; i<num_builtins; ++i) {
+		printf("%s\t\t%s\n", builtins[i].name, builtins[i].help_message);
+	}
+}
 
 // NOTE: parse modifies cmdline
 //       pointers in cmd struct point into same memory as cmdline
