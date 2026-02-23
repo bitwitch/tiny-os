@@ -196,6 +196,18 @@ void test_read_file(void) {
 	}
 }
 
+void prompt(void) {
+	// TODO: cache working directory, and maybe update every cd command to avoid unecessary syscalls
+	char working_directory[PATH_MAX];
+	int rc = cwd(working_directory, PATH_MAX);
+	if (rc < 0) {
+		printf("failed to get current working directory\n");
+		putchar('>');
+	} else {
+		printf("%s>", working_directory);
+	}
+}
+
 void main(void) {
 	char cmdline[MAX_CMDLINE];
 	Command cmd;
@@ -205,7 +217,7 @@ void main(void) {
 	for(;;) {
 		memset(cmdline, 0, sizeof(cmdline));
 		memset(&cmd, 0, sizeof(cmd));
-		putchar('>');
+		prompt();
 		int i;
 		for (i=0; i < MAX_CMDLINE; ++i) {
 			int c = getchar();
